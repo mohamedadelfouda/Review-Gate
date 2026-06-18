@@ -67,6 +67,13 @@ bash install.sh /path/to/your-repo --mode push            # push/PR-based projec
 bash install.sh /path/to/your-repo --tools claude,cursor  # narrow the AI tools (default: all)
 ```
 
+> **It asks, instead of guessing.** Run with no `--mode`/`--tools` in a terminal
+> and it auto-detects then **asks you to confirm** mode, tools, and the verify
+> preset. When an **AI agent** installs it, the agent asks you those choices in
+> your language and proposes the verify commands from your project — see
+> [`SETUP.md`](SETUP.md). Add `--yes` to take the detected values without prompts
+> (CI / scripted).
+
 The installer adds `.review-gate/` (gate + agents + guard-skills + config),
 installs the git hooks (`.githooks/` + `core.hooksPath`), wires each selected AI
 tool, and git-ignores the machine-local marker. Then:
@@ -188,6 +195,11 @@ bash install.sh /path/to/your-repo --mode commit          # مشروع محلي 
 bash install.sh /path/to/your-repo --mode push            # مشروع بيعمل push/PR
 bash install.sh /path/to/your-repo --tools claude,cursor  # تحديد أدوات AI (الافتراضي: الكل)
 ```
+
+> **بتسأل، مش بتخمّن.** شغّلها من غير `--mode`/`--tools` في تيرمنال → بتكتشف
+> تلقائي وبعدين **بتسألك تأكّد** الوضع والأدوات والـ verify preset. ولو **أجنت AI**
+> بيركّبها، الأجنت بيسألك الاختيارات دي **بلغتك** ويقترح أوامر الـ verify من
+> مشروعك — شوف [`SETUP.md`](SETUP.md). زوّد `--yes` عشان تاخد المكتشف من غير أسئلة.
 
 الـ installer بيضيف `.review-gate/` (البوابة + الأجنتس + الـ guard-skills +
 الإعداد)، بيركّب الـ git hooks، بيوصّل كل أداة مختارة، وبيعمل gitignore للـ marker.

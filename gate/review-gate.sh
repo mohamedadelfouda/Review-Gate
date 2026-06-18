@@ -138,11 +138,11 @@ gate_block_reason() {
   if [ "$GATE_MODE" = commit ]; then
     RUN_HINT="Run the gate first: stage everything (git add -A), review the staged diff with the review agents + guard-skills, fix, then:
     bash $GATE_SUBDIR/review-gate.sh attest --ran review,clean-code,docs
-attest binds the marker to the STAGED tree and runs verify; then 'git commit'. Re-staging different content invalidates the marker. (Escape hatch: git commit --no-verify.)"
+attest binds the marker to the STAGED tree and runs verify; then 'git commit'. Re-staging different content invalidates the marker."
   else
     RUN_HINT="Run the gate first: review + fix, commit, then:
     bash $GATE_SUBDIR/review-gate.sh attest --ran review,clean-code,docs
-attest binds the marker to HEAD and runs verify. Any new commit invalidates it. (Escape hatch: git push --no-verify.)"
+attest binds the marker to HEAD and runs verify. Any new commit invalidates it."
   fi
 
   if [ ! -f "$MARKER" ]; then
@@ -232,7 +232,7 @@ if [ "$MODE" = "precommit" ] || [ "$MODE" = "prepush" ]; then
     exit 1
   fi
   if [ -z "${REVIEW_GATE_PYTHON:-}" ] && ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
-    printf '\n🔒 review-gate: Python 3 is required (REVIEW_GATE_PYTHON, python3, or python) — failing closed. Install it (or bypass with --no-verify).\n\n' >&2
+    printf '\n🔒 review-gate: Python 3 is required (REVIEW_GATE_PYTHON, python3, or python) — failing closed. Install it.\n\n' >&2
     exit 1
   fi
   GATE_MODE="$(read_gate_mode "$ROOT/$GATE_SUBDIR/gate.config.json")"

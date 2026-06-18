@@ -44,10 +44,23 @@ repo's own gate runs on every commit.
 - **The CI companion shares the gate's verify** via a `ci-verify` subcommand
   (no divergent re-implementation).
 
+### Setup
+
+- **Interactive setup.** The installer auto-detects the project (AI tools from
+  `.cursor/`/`CLAUDE.md`/`AGENTS.md`/`.windsurfrules`; stack from `package.json`/
+  `pyproject.toml`/`go.mod`) and, with a terminal, **asks** the user to confirm
+  mode / tools / verify preset. `--yes` skips prompts; CI / non-TTY never prompts
+  (can't hang). **AI agents ask the user in their language** and propose the
+  verify commands from the project — see `SETUP.md`.
+- **Mandatory once installed** (the advisory/on-demand option was dropped). The
+  user-facing block messages no longer advertise `--no-verify`.
+
 ### Notes
 
-- It remains an **honesty gate**: the local hook is bypassable with `--no-verify`.
-  Pair it with the CI companion for un-bypassable enforcement.
+- It remains an **honesty gate**: a LOCAL git hook can always be skipped with
+  `--no-verify` (git runs no hook at all then) — no local hook can prevent that.
+  For truly un-skippable enforcement make the CI companion a **required** status
+  check (see `SETUP.md`); it runs server-side regardless of `--no-verify`.
 - **Self-hosted:** review-gate gates its own commits. Its `test` verify runs
   `tests/run.sh`, which installs the gate into throwaway repos and exercises the
   full block → attest → commit/push flow — so every commit tests the gate, with

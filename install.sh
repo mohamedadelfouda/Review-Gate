@@ -28,24 +28,69 @@ py() { if [ -n "${REVIEW_GATE_PYTHON:-}" ]; then "$REVIEW_GATE_PYTHON" "$@"; eli
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=""; GATE_MODE="commit"; TOOLS="all"; FORCE=0
+MODE_SET=0; TOOLS_SET=0; FORCE_INTERACTIVE=0; ASSUME_YES=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --mode)    GATE_MODE="${2:-commit}"; shift 2 ;;
-    --mode=*)  GATE_MODE="${1#--mode=}"; shift ;;
-    --tools)   TOOLS="${2:-all}"; shift 2 ;;
-    --tools=*) TOOLS="${1#--tools=}"; shift ;;
-    --force)   FORCE=1; shift ;;
-    -*)        echo "unknown option: $1" >&2; exit 2 ;;
-    *)         [ -z "$TARGET" ] && TARGET="$1"; shift ;;
+    --mode)        GATE_MODE="${2:-commit}"; MODE_SET=1; shift 2 ;;
+    --mode=*)      GATE_MODE="${1#--mode=}"; MODE_SET=1; shift ;;
+    --tools)       TOOLS="${2:-all}"; TOOLS_SET=1; shift 2 ;;
+    --tools=*)     TOOLS="${1#--tools=}"; TOOLS_SET=1; shift ;;
+    --force)       FORCE=1; shift ;;
+    --interactive) FORCE_INTERACTIVE=1; shift ;;   # prompt even when stdin isn't a TTY
+    --yes|-y)      ASSUME_YES=1; shift ;;           # never prompt; take detected/defaults
+    -*)            echo "unknown option: $1" >&2; exit 2 ;;
+    *)             [ -z "$TARGET" ] && TARGET="$1"; shift ;;
   esac
 done
 
-[ "$GATE_MODE" = push ] || [ "$GATE_MODE" = commit ] || { echo "❌ --mode must be push|commit" >&2; exit 2; }
-[ -n "$TARGET" ] || { echo "usage: bash install.sh /path/to/repo [--mode push|commit] [--tools all|claude,codex,cursor,windsurf] [--force]" >&2; exit 2; }
+{ [ "$MODE_SET" -eq 0 ] || [ "$GATE_MODE" = push ] || [ "$GATE_MODE" = commit ]; } || { echo "❌ --mode must be push|commit" >&2; exit 2; }
+[ -n "$TARGET" ] || { echo "usage: bash install.sh /path/to/repo [--mode push|commit] [--tools all|claude,codex,cursor,windsurf] [--interactive|--yes] [--force]" >&2; exit 2; }
 [ -d "$TARGET" ] || { echo "❌ target not found: $TARGET" >&2; exit 1; }
 TARGET="$(cd "$TARGET" && pwd)"
 git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1 || { echo "❌ $TARGET is not a git repo. Run 'git init' first." >&2; exit 1; }
 [ -n "${REVIEW_GATE_PYTHON:-}" ] || command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || { echo "❌ Python 3 (REVIEW_GATE_PYTHON, python3, or python) is required to install review-gate." >&2; exit 1; }
+
+# ── Auto-detect, and (only with a human at a TTY) ask to confirm ────────────
+detect_tools() {  # comma list of AI tools present in the repo, else "all"
+  local d=""
+  [ -d "$TARGET/.cursor" ] && d="$d cursor"
+  { [ -f "$TARGET/CLAUDE.md" ] || [ -d "$TARGET/.claude" ]; } && d="$d claude"
+  [ -f "$TARGET/AGENTS.md" ] && d="$d codex"
+  [ -f "$TARGET/.windsurfrules" ] && d="$d windsurf"
+  d="$(echo "$d" | xargs | tr ' ' ',')"
+  [ -n "$d" ] && echo "$d" || echo "all"
+}
+detect_mode() { [ -n "$(git -C "$TARGET" remote 2>/dev/null)" ] && echo push || echo commit; }
+detect_example() {  # the verify-config preset that best fits the project's stack
+  if [ -f "$TARGET/package.json" ]; then echo "$SCRIPT_DIR/gate/gate.config.example.json"     # node
+  elif [ -f "$TARGET/pyproject.toml" ] || [ -f "$TARGET/setup.py" ] || ls "$TARGET"/*.py >/dev/null 2>&1; then echo "$SCRIPT_DIR/gate/examples/python.gate.config.json"
+  elif [ -f "$TARGET/go.mod" ]; then echo "$SCRIPT_DIR/gate/examples/go.gate.config.json"
+  else echo "$SCRIPT_DIR/gate/gate.config.example.json"; fi   # unknown → node default; edit after
+}
+
+ASK=0
+{ [ -t 0 ] && [ -t 1 ]; } && ASK=1            # a real terminal with a human
+[ "$FORCE_INTERACTIVE" -eq 1 ] && ASK=1
+[ "$ASSUME_YES" -eq 1 ] && ASK=0              # --yes wins: never prompt (CI / scripted)
+
+if [ "$MODE_SET" -eq 0 ]; then
+  SUGGEST_MODE="$(detect_mode)"
+  if [ "$ASK" -eq 1 ]; then
+    printf 'Gate on local "commit" or on "push"? [%s]: ' "$SUGGEST_MODE" >&2
+    read -r ans 2>/dev/null || ans=""; GATE_MODE="${ans:-$SUGGEST_MODE}"
+  else GATE_MODE="$SUGGEST_MODE"; fi
+fi
+[ "$GATE_MODE" = push ] || [ "$GATE_MODE" = commit ] || { echo "❌ mode must be push|commit (got '$GATE_MODE')" >&2; exit 2; }
+
+if [ "$TOOLS_SET" -eq 0 ]; then
+  DETECTED_TOOLS="$(detect_tools)"
+  if [ "$ASK" -eq 1 ]; then
+    printf 'AI tools to wire (comma list, or "all") [%s]: ' "$DETECTED_TOOLS" >&2
+    read -r ans 2>/dev/null || ans=""; TOOLS="${ans:-$DETECTED_TOOLS}"
+  else TOOLS="$DETECTED_TOOLS"; fi
+fi
+
+CONFIG_EXAMPLE="$(detect_example)"
 
 want_tool() { case ",$TOOLS," in *",all,"*) return 0 ;; *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
@@ -99,8 +144,8 @@ if [ -f "$CFG" ] && [ "$FORCE" -ne 1 ]; then
     exit 1
   fi
 else
-  cp "$SCRIPT_DIR/gate/gate.config.example.json" "$CFG"
-  echo "  ✓ gate.config.json"
+  cp "$CONFIG_EXAMPLE" "$CFG"
+  echo "  ✓ gate.config.json (verify preset: $(basename "$CONFIG_EXAMPLE") — edit it to match your project)"
 fi
 CG_CFG="$CFG" GATE_MODE="$GATE_MODE" py - <<'PY'
 import json, os, sys
