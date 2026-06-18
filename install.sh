@@ -61,11 +61,19 @@ detect_tools() {  # comma list of AI tools present in the repo, else "all"
   [ -n "$d" ] && echo "$d" || echo "all"
 }
 detect_mode() { [ -n "$(git -C "$TARGET" remote 2>/dev/null)" ] && echo push || echo commit; }
-detect_example() {  # the verify-config preset that best fits the project's stack
-  if [ -f "$TARGET/package.json" ]; then echo "$SCRIPT_DIR/gate/gate.config.example.json"     # node
-  elif [ -f "$TARGET/pyproject.toml" ] || [ -f "$TARGET/setup.py" ] || ls "$TARGET"/*.py >/dev/null 2>&1; then echo "$SCRIPT_DIR/gate/examples/python.gate.config.json"
-  elif [ -f "$TARGET/go.mod" ]; then echo "$SCRIPT_DIR/gate/examples/go.gate.config.json"
-  else echo "$SCRIPT_DIR/gate/gate.config.example.json"; fi   # unknown → node default; edit after
+detect_preset() {  # verify preset NAME that best fits the project's stack
+  if [ -f "$TARGET/package.json" ]; then echo node
+  elif [ -f "$TARGET/pyproject.toml" ] || [ -f "$TARGET/setup.py" ] || ls "$TARGET"/*.py >/dev/null 2>&1; then echo python
+  elif [ -f "$TARGET/go.mod" ]; then echo go
+  else echo node; fi   # unknown → node default; edit after
+}
+preset_path() {  # preset name → example config path
+  case "$1" in
+    python)  echo "$SCRIPT_DIR/gate/examples/python.gate.config.json" ;;
+    go)      echo "$SCRIPT_DIR/gate/examples/go.gate.config.json" ;;
+    minimal) echo "$SCRIPT_DIR/gate/examples/minimal.gate.config.json" ;;
+    *)       echo "$SCRIPT_DIR/gate/gate.config.example.json" ;;   # node
+  esac
 }
 
 ASK=0
@@ -90,7 +98,12 @@ if [ "$TOOLS_SET" -eq 0 ]; then
   else TOOLS="$DETECTED_TOOLS"; fi
 fi
 
-CONFIG_EXAMPLE="$(detect_example)"
+PRESET="$(detect_preset)"
+if [ "$ASK" -eq 1 ]; then
+  printf 'Verify preset — node / python / go / minimal? [%s]: ' "$PRESET" >&2
+  read -r ans 2>/dev/null || ans=""; PRESET="${ans:-$PRESET}"
+fi
+CONFIG_EXAMPLE="$(preset_path "$PRESET")"
 
 want_tool() { case ",$TOOLS," in *",all,"*) return 0 ;; *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 

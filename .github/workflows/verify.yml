@@ -10,4 +10,5 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - name: review-gate ci-verify (shell syntax + smoke test)
-        run: bash .review-gate/review-gate.sh ci-verify
+        # this repo dogfoods from source (no installed .review-gate/review-gate.sh copy)
+        run: bash gate/review-gate.sh ci-verify

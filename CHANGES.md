@@ -41,8 +41,13 @@ repo's own gate runs on every commit.
 - **Re-installing with a different `--mode`** updates the Claude `PreToolUse`
   condition instead of leaving a stale one.
 - **Verify logs use `mktemp`** instead of fixed `/tmp` paths.
-- **The CI companion shares the gate's verify** via a `ci-verify` subcommand
-  (no divergent re-implementation).
+- **The CI companion shares the gate's verify** via a `ci-verify` subcommand that
+  **honors `perFile`** (perFile commands run on the PR's changed files, others
+  whole-project) so CI matches local attest instead of diverging; `tests/ci.sh`
+  locks it. The repo's own workflow runs the **source** `gate/review-gate.sh
+  ci-verify` (it dogfoods from source — there is no installed `.review-gate/`
+  copy in the tool's own repo). CI enforces the VERIFY step, not that a human/
+  agent actually reviewed.
 
 ### Setup
 

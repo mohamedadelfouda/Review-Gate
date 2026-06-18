@@ -28,7 +28,9 @@ jobs:
       #   with: { go-version: '1.22' }
 
       - name: Run review-gate verify (typecheck + lint + test)
-        # ci-verify re-runs the EXACT same config-driven verify the local gate
-        # uses (same Node defaults when the verify block is omitted), whole-project,
-        # using the shared logic in review-gate.sh — no divergent parsing here.
+        # ci-verify re-runs the same config-driven verify the local gate uses
+        # (shared logic in review-gate.sh; same Node defaults when omitted). It
+        # HONORS perFile — perFile commands run on the PR's changed files, others
+        # whole-project — so CI matches local attest instead of diverging.
+        # It enforces the VERIFY step; it does not prove a human/agent reviewed.
         run: bash .review-gate/review-gate.sh ci-verify

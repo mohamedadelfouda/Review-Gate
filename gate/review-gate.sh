@@ -540,10 +540,12 @@ open(sys.argv[10],'w').write(json.dumps(m,indent=2))" \
 fi
 
 # ===========================================================================
-# CI-VERIFY — re-run the gate's CONFIGURED verify whole-project, in CI, where it
-# can't be bypassed with --no-verify. Same config + same Node defaults as attest
-# (shared emit_verify_config); whole-project (perFile is ignored — CI is thorough)
-# and no marker/--ran. Use from a CI workflow on every PR.
+# CI-VERIFY — re-run the gate's CONFIGURED verify in CI, where it can't be skipped
+# with --no-verify. Same config + same Node defaults as attest (shared
+# emit_verify_config), and it HONORS perFile: perFile commands run on the PR's
+# changed files (diff vs the default branch), non-perFile run whole-project — so
+# ci-verify MATCHES local attest instead of diverging. No marker / no --ran.
+# Note: this enforces the VERIFY step, not that a human/agent actually reviewed.
 # ===========================================================================
 if [ "$MODE" = "ci-verify" ]; then
   ROOT="$(repo_root)"
@@ -554,17 +556,48 @@ if [ "$MODE" = "ci-verify" ]; then
   GATE_MODE="$(read_gate_mode "$CONFIG_FILE")"
   if [ "$GATE_MODE" = "invalid" ]; then echo "❌ ci-verify: $GATE_SUBDIR/gate.config.json is invalid (bad JSON or unknown gateMode value)." >&2; exit 1; fi
   CFG_SH="$(emit_verify_config "$CONFIG_FILE")"; eval "$CFG_SH"
-  echo "▶ review-gate ci-verify (whole project)"
+
+  # Resolve the changed files vs the default branch so perFile commands run on the
+  # SAME files local attest would — matching it, not diverging. Falls back to
+  # whole-project when no base resolves (first commit / shallow checkout).
+  DEFAULT_REF="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"
+  HEAD_OID="$(git rev-parse HEAD 2>/dev/null || echo "")"
+  CI_BASE=""
+  for ref in "$DEFAULT_REF" origin/main origin/master main master; do
+    [ -z "$ref" ] && continue
+    RT="$(git rev-parse "$ref" 2>/dev/null || true)"; [ "$RT" = "$HEAD_OID" ] && continue
+    CI_BASE="$(git merge-base HEAD "$ref" 2>/dev/null || true)"; [ -n "$CI_BASE" ] && break
+  done
+  CI_TOUCHED="$(mktemp -t gate-ci.XXXXXX)"; trap 'rm -f "$CI_TOUCHED"' EXIT
+  if [ -n "$CI_BASE" ]; then
+    git diff --name-only -z --diff-filter=ACMR "$CI_BASE" HEAD 2>/dev/null | LINTABLE_EXT="$LINTABLE_EXT" python_cmd -c '
+import sys, re, os
+data = sys.stdin.buffer.read().split(b"\x00")
+exts = [e for e in os.environ.get("LINTABLE_EXT","").split("|") if e]
+pat = re.compile((r"\.(" + "|".join(re.escape(e) for e in exts) + r")$").encode()) if exts else None
+out = [f for f in data if f and (pat is None or pat.search(f))]
+sys.stdout.buffer.write(b"\x00".join(out))
+' > "$CI_TOUCHED"
+  fi
+  CI_NLINT="$(python_cmd -c 'import sys; d=open(sys.argv[1],"rb").read().split(b"\x00"); print(len([x for x in d if x]))' "$CI_TOUCHED" 2>/dev/null || echo 0)"
+
+  echo "▶ review-gate ci-verify ($([ -n "$CI_BASE" ] && echo "changed files vs ${CI_BASE:0:8}" || echo "whole project"))"
   CI_FAIL=0
-  if [ "$TYPECHECK_ENABLED" = "1" ] && [ -n "$TYPECHECK_CMD" ]; then
-    echo "• typecheck: $TYPECHECK_CMD"; bash -c "$TYPECHECK_CMD" || { echo "✗ typecheck failed" >&2; CI_FAIL=1; }
-  else echo "• typecheck: disabled — skip"; fi
-  if [ "$LINT_ENABLED" = "1" ] && [ -n "$LINT_CMD" ]; then
-    echo "• lint: $LINT_CMD"; bash -c "$LINT_CMD" || { echo "✗ lint failed" >&2; CI_FAIL=1; }
-  else echo "• lint: disabled — skip"; fi
-  if [ "$TEST_ENABLED" = "1" ] && [ -n "$TEST_CMD" ]; then
-    echo "• test: $TEST_CMD"; bash -c "$TEST_CMD" || { echo "✗ test failed" >&2; CI_FAIL=1; }
-  else echo "• test: disabled — skip"; fi
+  ci_run() {  # label cmd perFile enabled — honors perFile exactly like local attest
+    local label="$1" cmd="$2" perfile="$3" enabled="$4"
+    if [ "$enabled" != "1" ] || [ -z "$cmd" ]; then echo "• $label: disabled — skip"; return 0; fi
+    if [ "$perfile" = "1" ] && [ -n "$CI_BASE" ]; then
+      if [ "$CI_NLINT" -eq 0 ]; then echo "• $label: no changed lint-able files — skip"; return 0; fi
+      echo "• $label ($CI_NLINT changed file(s)): $cmd"
+      xargs -0 sh -c 'c="$1"; shift; exec sh -c "$c \"\$@\"" _ "$@"' _ "$cmd" < "$CI_TOUCHED" || { echo "✗ $label failed" >&2; CI_FAIL=1; }
+    else
+      echo "• $label (whole project): $cmd"
+      bash -c "$cmd" || { echo "✗ $label failed" >&2; CI_FAIL=1; }
+    fi
+  }
+  ci_run typecheck "$TYPECHECK_CMD" "$TYPECHECK_PERFILE" "$TYPECHECK_ENABLED"
+  ci_run lint      "$LINT_CMD"      "$LINT_PERFILE"      "$LINT_ENABLED"
+  ci_run test      "$TEST_CMD"      "$TEST_PERFILE"      "$TEST_ENABLED"
   if [ "$CI_FAIL" -eq 0 ]; then echo "✅ ci-verify passed"; exit 0; else echo "❌ ci-verify failed" >&2; exit 1; fi
 fi
 

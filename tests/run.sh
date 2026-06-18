@@ -6,5 +6,6 @@ cd "$ROOT" || exit 1
 bash tests/smoke.sh || exit 1
 bash tests/push.sh || exit 1
 bash tests/install.sh || exit 1
+bash tests/ci.sh || exit 1
 
 echo "PASS: all review-gate integration tests"
