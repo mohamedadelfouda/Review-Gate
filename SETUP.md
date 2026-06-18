@@ -63,13 +63,17 @@ But git lets anyone skip a **local** hook with `--no-verify`, and **no local hoo
 can prevent that** — it's how git works. So the local gate is a strong, honest
 deterrent, not an unbreakable lock.
 
-To make it **truly un-skippable** for whatever reaches the shared repo, add the
-CI companion and make it a **required** check:
+To **enforce the verify step server-side** for whatever reaches the shared repo,
+add the CI companion and make it a **required** check:
 
 1. Copy [`integrations/ci/github-actions.yml`](integrations/ci/github-actions.yml)
    to `.github/workflows/review-gate.yml` (it runs `review-gate.sh ci-verify`).
 2. On GitHub: **Settings → Branches → Branch protection → Require status checks**
    → select the review-gate check.
+3. Protect the policy itself: a PR can edit its own `.review-gate/**`, so guard
+   those paths with a CODEOWNERS rule (or run verify from the base ref) — otherwise
+   a PR could weaken the gate it's being checked against. This is still
+   honesty-based server-side verification, not an absolute lock.
 
 CI runs on the server regardless of any local `--no-verify`, so a bypassed local
 commit still fails the pull request.

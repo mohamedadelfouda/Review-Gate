@@ -76,8 +76,10 @@ repo's own gate runs on every commit.
 
 - It remains an **honesty gate**: a LOCAL git hook can always be skipped with
   `--no-verify` (git runs no hook at all then) — no local hook can prevent that.
-  For truly un-skippable enforcement make the CI companion a **required** status
-  check (see `SETUP.md`); it runs server-side regardless of `--no-verify`.
+  For stronger, server-side enforcement make the CI companion a **required** status
+  check (see `SETUP.md`); it re-runs verify regardless of `--no-verify`. It stays
+  honesty-based, not a hard lock — a PR can edit its own `.review-gate/**`, so
+  protect those paths via CODEOWNERS (or run verify from the base ref).
 - **Self-hosted:** review-gate gates its own commits. Its `test` verify runs
   `tests/run.sh`, which installs the gate into throwaway repos and exercises the
   full block → attest → commit/push flow — so every commit tests the gate, with

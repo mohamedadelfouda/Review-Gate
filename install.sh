@@ -3,13 +3,16 @@
 # review-gate installer — set up the review gate in a target repo.
 #
 # Usage:
-#   bash install.sh /path/to/repo [--mode push|commit] [--tools all|claude,codex,cursor,windsurf] [--force]
+#   bash install.sh /path/to/repo [--mode push|commit]
+#       [--tools all|claude,codex,cursor,windsurf] [--interactive|--yes] [--force]
 #
-#   --mode   commit (default for local-only repos) | push
-#   --tools  which AI-tool integrations to wire (default: all). The git hook
-#            enforcement is ALWAYS installed regardless — it covers the terminal
-#            and any tool that runs git.
-#   --force  overwrite agents/skills/config/cursor-rule if they already exist.
+#   --mode         commit (default for local-only repos) | push
+#   --tools        which AI-tool integrations to wire (default: all). The git hook
+#                  enforcement is ALWAYS installed regardless — it covers the terminal
+#                  and any tool that runs git.
+#   --interactive  prompt for mode/tools/verify-preset even when stdin isn't a TTY.
+#   --yes / -y     never prompt; take the detected/flagged values (CI / scripted).
+#   --force        overwrite agents/skills/config/cursor-rule if they already exist.
 #
 # Installs:
 #   .review-gate/        review-gate.sh, gate.config.json, GATE.md, agents/, skills/
