@@ -1,255 +1,518 @@
 # review-gate
 
-> A tool-agnostic **review + verify gate** for git repositories.
-> It blocks a `git commit` (or `git push`) until a mandatory code review and a
-> configured verify step have run for the exact change.
+> **Review before code lands.**
 >
-> Created by **Fouda** · MIT licensed · works with the terminal, **Claude Code**,
-> **OpenAI Codex**, **Cursor**, **Windsurf**, and any tool that runs git.
+> `review-gate` is a tool-agnostic **review + verify gate** for Git repositories.
+> It blocks `git commit` or `git push` until the change has been reviewed and your
+> configured verify command has passed for the **exact change** being committed or pushed.
+
+- **Status:** `v0.2.0` — Public Beta
+- **Created by:** Fouda
+- **License:** MIT
+- **Telemetry:** None by default — it never sends your code, diffs, file names, or repo metadata anywhere.
+- **Works with:** terminal, humans, Claude Code, OpenAI Codex, Cursor, Windsurf, and any tool that runs Git.
 
 **🇬🇧 [English](#english) · 🇪🇬 [العربية](#العربية)**
+
+### Quick links
+[60-second flow](#60-second-flow) · [Quick install](#quick-install) ·
+[Two modes](#two-modes) · [Configure verify](#configure-verify) ·
+[CI companion](#ci-companion) · [Fail-closed](#fail-closed-behavior) ·
+[Privacy](#privacy) · [Limitations](#limitations)
 
 ---
 
 ## English
 
-### What it is
+### Why this exists
 
-`review-gate` makes "review before it lands" non-optional. It installs a native
-**git hook** that refuses to let a commit (or push) through until:
+AI coding tools are fast. Sometimes too fast. A coding agent can edit files, run a
+quick check, and commit or push before a proper review happened. `review-gate` adds
+a simple rule at the Git boundary:
 
-1. the change has been **reviewed** (by review agents + guard-skill checklists), and
-2. a **verify** step (your typecheck + lint + test) has passed for that exact change.
+> No commit or push until review was acknowledged and verify passed for the exact change.
 
-Because the enforcement is a **git hook**, it works for *any* actor that runs
-git — the terminal, a human, Claude Code, Codex, Cursor, Windsurf — not just one
-AI tool. Each AI tool additionally gets a small instruction file so it runs the
-review *proactively*.
+It is especially useful for AI-assisted workflows where Claude Code, Codex, Cursor,
+Windsurf, or another tool may be changing code quickly.
 
-It is an **honesty gate, not a sandbox.** It makes the *accidental* skip
-("the agent forgot to review") impossible. A determined caller can still bypass
-it (`git commit --no-verify`, or by editing the config). For un-bypassable
-enforcement, pair it with a CI check.
+### 60-second flow
 
-### How it works
+```bash
+git add -A
+git commit -m "change"
+# 🔒 blocked: no fresh review-gate attestation for this change
 
-Two commands inside `.review-gate/review-gate.sh`:
+bash .review-gate/review-gate.sh attest --ran review,clean-code
+git commit -m "change"
+# ✅ allowed
+```
 
-- **`attest --ran <steps>`** — you run this *after* reviewing. It computes which
-  review/guard steps the diff **requires** (from the changed files) and refuses to
-  record approval unless your `--ran` covers them. Then it runs the configured
-  **verify** and writes a marker bound to the exact change.
-- the **git hook** (`pre-commit` / `pre-push`) — runs automatically and **blocks**
-  the action unless a fresh, passing marker matches the current change.
+If you change the code after attesting, the marker goes stale and the next commit is
+blocked again — approval is bound to the exact change, not to "I ran it once".
 
-Any change to what you're committing invalidates the marker, so the gate always
-re-runs on the latest content.
+### What it does
+
+`review-gate` installs native Git hooks that block either `git commit` (**commit
+mode**) or `git push` (**push mode**). Before the action is allowed, you run:
+
+```bash
+bash .review-gate/review-gate.sh attest --ran review,clean-code,docs
+```
+
+The gate then:
+
+1. computes which review/guard steps are required from the changed files,
+2. checks that your `--ran` steps cover them,
+3. runs the configured verify steps: typecheck, lint, and test,
+4. writes a local marker tied to the exact staged tree or HEAD commit,
+5. lets the Git hook pass only while that marker still matches.
+
+### Important: honesty gate, not a sandbox
+
+`review-gate` is an **honesty gate**, not a security sandbox. It prevents accidental
+skips — "the agent forgot to review", "I committed before running tests", "the staged
+code changed after review", "I attested one branch but pushed another".
+
+It does **not** stop a determined person from bypassing local Git hooks (git's own
+`--no-verify` skips hooks entirely — no local hook can prevent that). For hard,
+non-bypassable enforcement, pair it with CI: make the included GitHub Actions
+companion (`integrations/ci/github-actions.yml`) a **required** status check.
 
 ### Two modes
 
-Set per-repo in `.review-gate/gate.config.json` → `"gateMode"`:
+Set the mode in `.review-gate/gate.config.json` via `"gateMode": "commit"` or
+`"gateMode": "push"`.
 
-| Mode | Fires on | Marker binds to | Use for |
-|------|----------|-----------------|---------|
-| `commit` | `git commit` | the **staged tree** | local-only repos that never push |
-| `push` | `git push` | the **HEAD commit** | repos that push to a remote / open PRs |
+| Mode     | Blocks       | Marker binds to          | Best for                                                        |
+| -------- | ------------ | ------------------------ | --------------------------------------------------------------- |
+| `commit` | `git commit` | staged tree              | local-first projects, solo work, repos that do not always push  |
+| `push`   | `git push`   | HEAD commit / pushed ref | team repos, PR workflows, remote-backed projects                |
 
-> The git hook enforces **`git push`** for every actor (terminal / human / any
-> tool). `gh pr create` is additionally blocked by the **Claude** integration
-> only — for guaranteed PR-level enforcement, add the CI check (below).
+#### Commit mode
 
-### Install
+The gate binds to the **staged tree**. Recommended flow:
 
 ```bash
-# clone the kit somewhere, then point it at your repo:
-bash install.sh /path/to/your-repo --mode commit          # local-only project
-bash install.sh /path/to/your-repo --mode push            # push/PR-based project
-bash install.sh /path/to/your-repo --tools claude,cursor  # narrow the AI tools (default: all)
+git add -A
+# review the staged diff
+bash .review-gate/review-gate.sh attest --ran review,clean-code,docs
+git commit -m "your message"
 ```
 
-> **It asks, instead of guessing.** Run with no `--mode`/`--tools` in a terminal
-> and it auto-detects then **asks you to confirm** mode, tools, and the verify
-> preset. When an **AI agent** installs it, the agent asks you those choices in
-> your language and proposes the verify commands from your project — see
-> [`SETUP.md`](SETUP.md). Add `--yes` to take the detected values without prompts
-> (CI / scripted).
+It blocks attestation if there are unstaged tracked changes or non-ignored untracked
+files, because those are visible to verify but may not be part of the commit.
 
-The installer adds `.review-gate/` (gate + agents + guard-skills + config),
-installs the git hooks (`.githooks/` + `core.hooksPath`), wires each selected AI
-tool, and git-ignores the machine-local marker. Then:
+#### Push mode
 
-1. Edit `.review-gate/gate.config.json` so the verify commands match your stack.
-2. Commit the review-gate files (the **first** commit is gated too — review + attest it).
-3. Each person who clones the repo runs **once**: `git config core.hooksPath .githooks`.
+The gate binds to the **commit being pushed**. Recommended flow:
 
-### Tool coverage
+```bash
+# review the branch diff
+git commit -m "your message"
+bash .review-gate/review-gate.sh attest --ran review,clean-code,docs
+git push
+```
 
-| Actor | How it's enforced | How it's told to review |
-|-------|-------------------|--------------------------|
-| Terminal / human / any tool | `pre-commit` / `pre-push` git hook | — (you follow `GATE.md`) |
-| Claude Code | git hook + PreToolUse hook | `CLAUDE.md` + `.claude/agents` + `.claude/skills` (parallel subagents) |
-| OpenAI Codex (& others) | git hook | `AGENTS.md` |
-| Cursor | git hook | `.cursor/rules/review-gate.mdc` |
-| Windsurf | git hook | `.windsurfrules` |
+The pre-push hook validates the actual refs Git is pushing, not only the currently
+checked-out `HEAD`. Attesting one branch does not unlock pushing a different branch.
 
-Tools that can't spawn subagents apply the agents/guard-skills as **checklists**
-in a single pass — the enforcement is identical; only the review depth varies.
+`gh pr create` is not a universal Git hook event. The Claude integration additionally
+blocks `gh pr create`, but for guaranteed PR-level enforcement add the CI companion.
 
-### Configure verify (any language)
+> In push mode, attest does a best-effort, time-boxed `git fetch` to resolve the
+> review base against your remote — it still works offline (it falls back to your
+> local base).
 
-`.review-gate/gate.config.json` declares three commands. Omitting `verify`
-defaults to the Node trio (`tsc` + `eslint` + `vitest`).
+### Quick install
+
+Clone or download this repo, then run the installer against your target repo:
+
+```bash
+bash install.sh /path/to/your-repo
+```
+
+**It asks, instead of guessing.** Run in a terminal with no flags and the installer
+auto-detects your project, then **asks you to confirm**:
+
+- **mode** — `commit` or `push` (suggested from whether the repo has a Git remote),
+- **tools** — which AI integrations to wire (detected from `.cursor/`, `CLAUDE.md`,
+  `AGENTS.md`, `.windsurfrules`; falls back to all if none are found),
+- **verify preset** — node / python / go / minimal (detected from `package.json` /
+  `pyproject.toml` / `go.mod`).
+
+Skip the questions with explicit flags, or `--yes` to take the detected values (CI /
+scripted runs never prompt, so they can't hang):
+
+```bash
+bash install.sh /path/to/your-repo --mode push --tools claude,cursor
+bash install.sh /path/to/your-repo --yes
+```
+
+Supported tool values: `claude,codex,cursor,windsurf`.
+
+When an **AI agent** (Claude / Codex / Cursor / …) installs review-gate, it asks you
+those same choices **in your own language** and proposes verify commands from your
+project — see **[`SETUP.md`](SETUP.md)**.
+
+### What the installer adds
+
+```text
+.review-gate/
+  review-gate.sh
+  gate.config.json
+  GATE.md
+  agents/
+  skills/
+  setup.sh
+.githooks/
+  pre-commit
+  pre-push
+```
+
+It also: sets `core.hooksPath` to `.githooks` (only when safe), installs the AI-tool
+instruction files, adds `.review-gate/.gate/` to `.gitignore`, and pins shell
+scripts/hooks to LF via `.gitattributes`.
+
+**Your existing hooks are safe.** If your repo already uses Husky or another hook
+manager, review-gate leaves your `core.hooksPath` untouched and prints the commands
+to wire itself in manually. And if a non-review-gate `.githooks/pre-commit` /
+`pre-push` already exists, the installer **leaves it in place** and prints how to
+wire review-gate into it (use `--force` to replace it) — it never silently
+overwrites your hooks.
+
+### After install
+
+1. Edit `.review-gate/gate.config.json` and set the verify commands for your stack.
+2. Commit the review-gate files. The first commit is gated too, so run review + attest before committing.
+3. Every person who clones the repo runs once: `bash .review-gate/setup.sh`
+   (it sets `core.hooksPath`, refusing to override an existing one). Git hooks are
+   local per clone, so this is required for every clone.
+
+### Configure verify
+
+`review-gate` can run any commands you want. The installer pre-fills a preset based
+on your detected stack; edit it freely. Example for Python:
 
 ```json
 {
   "gateMode": "commit",
   "verify": {
-    "typecheck": { "cmd": "python -m mypy .",    "perFile": false, "enabled": true },
-    "lint":      { "cmd": "python -m ruff check", "perFile": true,  "enabled": true },
-    "test":      { "cmd": "python -m pytest -q",  "perFile": false, "enabled": true }
+    "typecheck": { "cmd": "python -m mypy .",      "perFile": false, "enabled": true },
+    "lint":      { "cmd": "python -m ruff check",  "perFile": true,  "enabled": true },
+    "test":      { "cmd": "python -m pytest -q",   "perFile": false, "enabled": true }
   },
   "lintableExtensions": ["py"],
   "codeExtensions": ["py"]
 }
 ```
 
-- `perFile: true` appends the changed files (matching `lintableExtensions`) as args.
-- `perFile: false` runs the command once for the whole project.
-- `enabled: false` skips that step (no failure). A project with no tests/linter
-  still gets the **review** enforcement.
+`perFile: true` appends the changed files as safe positional arguments, e.g.
+`python -m ruff check changed_1.py changed_2.py`. `perFile: false` runs the command
+once for the whole project.
 
-Ready-made examples: [`gate/examples/`](gate/examples/) (python, go, minimal).
+If the whole `verify` block is omitted, review-gate uses Node defaults
+(`tsc --noEmit`, `eslint --max-warnings 0`, `vitest related --run`). If a `verify`
+block exists but one step is omitted, that step is **disabled** instead of silently
+falling back to Node. Ready-made examples: `gate/examples/{python,go,minimal}.gate.config.json`.
 
-### The honesty-gate caveat (read this)
+### Review steps
 
-- The **verify** (typecheck/lint/test) is genuinely run and enforced.
-- The **review acknowledgment** (`--ran review`) is trusted — the gate can't force
-  the thinking to happen, only make the *accidental* skip impossible.
-- The git hook can be bypassed with `--no-verify`. That's by design (escape hatch).
-- For **hard** enforcement that nobody can bypass, add a CI job that re-runs verify
-  on the pull request — ready-made template:
-  [`integrations/ci/github-actions.yml`](integrations/ci/github-actions.yml).
+`--ran` always includes `review`. Extra guard steps are required by changed files:
+
+| Step         | Required when           |
+| ------------ | ----------------------- |
+| `clean-code` | production code changed |
+| `test`       | test files changed      |
+| `docs`       | docs / markdown changed |
+
+```bash
+bash .review-gate/review-gate.sh attest --ran review,clean-code        # code only
+bash .review-gate/review-gate.sh attest --ran review,clean-code,docs   # code + docs
+```
+
+If a required step is missing, `attest` refuses to write the marker.
+
+### Tool coverage
+
+| Actor                  | Enforcement                | Review guidance                                 |
+| ---------------------- | -------------------------- | ----------------------------------------------- |
+| Terminal / human       | Git hook                   | `GATE.md`                                       |
+| Any tool that runs Git | Git hook                   | `GATE.md`                                       |
+| Claude Code            | Git hook + PreToolUse hook | `CLAUDE.md`, `.claude/agents`, `.claude/skills` |
+| OpenAI Codex           | Git hook                   | `AGENTS.md`                                     |
+| Cursor                 | Git hook                   | `.cursor/rules/review-gate.mdc`                 |
+| Windsurf               | Git hook                   | `.windsurfrules`                                |
+
+The Git hook is the actual enforcement. AI integrations are extra instructions that
+make tools review proactively before they commit or push. Tools that cannot spawn
+subagents can still apply the agents and guard-skills as checklists in one pass.
+
+### Fail-closed behavior
+
+`review-gate` fails closed for configuration mistakes. It blocks when:
+`.review-gate/gate.config.json` is missing, is invalid JSON, or has an invalid
+`gateMode`; the marker is missing, corrupt, or for another mode; the staged tree
+changed after attest (commit mode); HEAD or the pushed ref changed after attest
+(push mode); untracked non-ignored files or unstaged tracked changes are present at
+attest; or verify fails. Ignored files do not block attest.
+
+### CI companion
+
+Local hooks are useful but bypassable. For stronger enforcement, add the CI workflow
+(`integrations/ci/github-actions.yml`) and require it. It runs
+`bash .review-gate/review-gate.sh ci-verify`, which re-runs the **same** configured
+verify as local attest (it honors `perFile` — perFile commands run on the PR's
+changed files, others whole-project). CI cannot prove a review was thoughtful, but it
+enforces the real verify step on every pull request — regardless of any local
+`--no-verify`.
 
 ### Requirements
 
-`bash`, `git`, and Python 3 on `PATH` as `python3` or `python` (used for JSON +
-safe arg parsing) — or set `REVIEW_GATE_PYTHON` to pin a specific interpreter
-(e.g. `REVIEW_GATE_PYTHON=/usr/bin/python3`). On Windows, run via Git Bash.
+- `bash`, `git`, and Python 3 as `python3` or `python`. If your environment has a
+  wrapped or missing `python3`, pin one explicitly:
 
-### Credits & license
+  ```bash
+  REVIEW_GATE_PYTHON=/usr/bin/python3 bash .review-gate/review-gate.sh attest --ran review,clean-code
+  ```
 
-- **review-gate** — created by **Fouda**, MIT licensed (see [`LICENSE`](LICENSE)).
-- **Guard skills** (`clean-code-guard`, `test-guard`, `docs-guard`) — by
-  **Ahmed Nagdy** ([@amElnagdy](https://github.com/amElnagdy/guard-skills)), MIT,
-  vendored unmodified with their license preserved (see [`NOTICE`](NOTICE)).
+- On Windows, use Git Bash.
+- Shell scripts and hooks are pinned to LF. If no Python 3 is found, the gate fails
+  closed. GNU `timeout` is used when available; the gate degrades gracefully without
+  it (e.g. stock macOS).
+
+### Privacy
+
+`review-gate` does not collect telemetry. It does not send your code, file names,
+diffs, commands, or repository metadata anywhere. Everything runs locally; the only
+network access is your own `git fetch` (push mode, best-effort) to resolve a review
+base against **your** remote.
+
+### Tests
+
+```bash
+bash tests/run.sh        # the full integration suite
+bash tests/verify.sh     # shell syntax
+bash tests/smoke.sh      # commit-mode block → attest → unblock
+bash tests/push.sh       # push-mode ref enforcement
+bash tests/install.sh    # installer --force + invalid-config + foreign-hook safety
+bash tests/ci.sh         # ci-verify pass/fail + perFile
+```
+
+### Limitations
+
+It does **not** replace human judgment or CI, prevent a determined local bypass,
+guarantee the review was thoughtful, sandbox AI tools, or secure secrets. It **does**
+make accidental review skips hard, force verify to run, bind approval to the exact
+change, invalidate approval when the change changes, and give AI-assisted workflows a
+safer default.
+
+### Credits
+
+- `review-gate` — created by **Fouda**, MIT licensed.
+- Guard skills (`clean-code-guard`, `test-guard`, `docs-guard`) are by
+  **Ahmed Nagdy** ([@amElnagdy](https://github.com/amElnagdy/guard-skills)), MIT
+  licensed, vendored with their license preserved. See `NOTICE`.
 
 ---
 
 ## العربية
 
-### إيه هي
+### ليه الأداة دي موجودة؟
 
-`review-gate` بتخلّي "المراجعة قبل ما الكود يعدّي" حاجة **إجبارية**. بتركّب **git
-hook** بيرفض يعدّي أي `commit` (أو `push`) لحد ما:
+أدوات الـ AI coding بقت سريعة جدًا، ساعات أسرع من اللازم — ممكن الـ agent يعدّل ملفات،
+يشغّل check بسيط، ويعمل commit أو push قبل ما يحصل review حقيقي. `review-gate` بتحط قاعدة
+بسيطة عند باب Git:
 
-1. التغيير يتـ **راجع** (بمراجعين + checklists بتاعة guard-skills)، و
-2. خطوة **verify** (الـ typecheck + lint + test بتوعك) تنجح على نفس التغيير بالظبط.
+> مفيش commit أو push يعدّي غير لما يحصل review ويتشغّل verify على نفس التغيير بالظبط.
 
-عشان الفرض **git hook**، بيشتغل لأي حاجة بتشغّل git — التيرمنال، إنسان، Claude
-Code، Codex، Cursor، Windsurf — مش أداة واحدة بس. وكل أداة AI بتاخد كمان ملف
-تعليمات صغير عشان تعمل المراجعة من نفسها.
+### تجربة في ٦٠ ثانية
 
-دي **بوابة على الذمة، مش صندوق مغلق.** بتخلّي النسيان (إن الـ agent ينسى يراجع)
-**مستحيل**. أي حد مصمم يعدّيها يقدر (`git commit --no-verify` أو يعدّل الإعداد).
-للفرض اللي ماينفعش يتعدّى، ضيف معاها CI check.
+```bash
+git add -A
+git commit -m "change"
+# 🔒 اتبلوك: مفيش attest جديد للتغيير ده
 
-### بتشتغل إزاي
+bash .review-gate/review-gate.sh attest --ran review,clean-code
+git commit -m "change"
+# ✅ عدّى
+```
 
-أمرين جوّه `.review-gate/review-gate.sh`:
+لو غيّرت الكود بعد الـ attest، الـ marker يبقى قديم والـ commit اللي بعده يتبلوك تاني —
+الموافقة مربوطة بنفس التغيير، مش بـ"أنا شغّلته مرة".
 
-- **`attest --ran <steps>`** — بتشغّلها **بعد** المراجعة. بتحسب الـ steps المطلوبة
-  للتغيير (من الملفات المتغيّرة) وبترفض تسجّل الموافقة إلا لو الـ `--ran` بتاعك
-  مغطّيها. وبعدين بتشغّل الـ **verify** وبتكتب marker مربوط بالتغيير بالظبط.
-- الـ **git hook** (`pre-commit` / `pre-push`) — بيشتغل أوتوماتيك و**يبلوك** الإجراء
-  إلا لو فيه marker جديد وناجح بيطابق التغيير الحالي.
+### بتعمل إيه؟
 
-أي تعديل في اللي بتعمله commit بيلغي الـ marker، فالبوابة دايمًا بتعيد على آخر محتوى.
+`review-gate` بتركّب Git hooks تمنع `git commit` (في **commit mode**) أو `git push` (في
+**push mode**). قبل ما العملية تعدّي، تشغّل:
+
+```bash
+bash .review-gate/review-gate.sh attest --ran review,clean-code,docs
+```
+
+وبعدها: (1) تحسب خطوات المراجعة المطلوبة حسب الملفات المتغيرة، (2) تتأكد إن `--ran`
+يغطّيها، (3) تشغّل verify (typecheck/lint/test)، (4) تكتب marker محلي مربوط بنفس التغيير،
+(5) تسمح للعملية بس لو التغيير لسه مطابق للـ marker.
+
+### مهم: بوابة ذمة، مش sandbox
+
+`review-gate` هي **honesty gate**، مش security sandbox. بتمنع النسيان والأخطاء العادية
+(الـ agent نسي يراجع / commit قبل tests / غيّرت staged بعد review / attest لفرع ودفعت فرع).
+لكنها **لا** تمنع شخص مصمم يتخطّى الـ hooks المحلية — `--no-verify` بيتخطّى الـ hooks
+بالكامل ومفيش hook محلي يمنع ده. للفرض الصلب، خلّي الـ CI companion **required check**.
 
 ### الوضعين
 
-بيتحدد لكل ريبو في `.review-gate/gate.config.json` → `"gateMode"`:
+الوضع في `.review-gate/gate.config.json` عبر `"gateMode": "commit"` أو `"push"`.
 
-| الوضع | بيشتغل عند | الـ marker مربوط بـ | يُستخدم لـ |
-|------|------------|---------------------|-----------|
-| `commit` | `git commit` | **الشجرة المجهّزة (staged)** | مشاريع محلية مش بتعمل push |
-| `push` | `git push` | **HEAD commit** | مشاريع بتعمل push / PRs |
+| الوضع    | بيمنع        | الـ marker مربوط بـ      | مناسب لـ                                     |
+| -------- | ------------ | ------------------------ | -------------------------------------------- |
+| `commit` | `git commit` | staged tree              | شغل محلي / solo / repos مش دايمًا بتعمل push |
+| `push`   | `git push`   | HEAD commit / pushed ref | فرق / PRs / شغل على remote                   |
 
-> الـ git hook بيفرض **`git push`** لأي مُنفِّذ (تيرمنال / إنسان / أي أداة). أما
-> `gh pr create` فبيتمنع من تكامل **Claude** بس — لفرض مضمون على مستوى الـ PR ضيف
-> الـ CI check (تحت).
-
-### التثبيت
+**commit mode** — مربوط بالـ staged tree:
 
 ```bash
-bash install.sh /path/to/your-repo --mode commit          # مشروع محلي بحت
-bash install.sh /path/to/your-repo --mode push            # مشروع بيعمل push/PR
-bash install.sh /path/to/your-repo --tools claude,cursor  # تحديد أدوات AI (الافتراضي: الكل)
+git add -A
+bash .review-gate/review-gate.sh attest --ran review,clean-code,docs
+git commit -m "your message"
 ```
 
-> **بتسأل، مش بتخمّن.** شغّلها من غير `--mode`/`--tools` في تيرمنال → بتكتشف
-> تلقائي وبعدين **بتسألك تأكّد** الوضع والأدوات والـ verify preset. ولو **أجنت AI**
-> بيركّبها، الأجنت بيسألك الاختيارات دي **بلغتك** ويقترح أوامر الـ verify من
-> مشروعك — شوف [`SETUP.md`](SETUP.md). زوّد `--yes` عشان تاخد المكتشف من غير أسئلة.
+بيمنع الـ attest لو فيه unstaged tracked changes أو untracked files مش ignored.
 
-الـ installer بيضيف `.review-gate/` (البوابة + الأجنتس + الـ guard-skills +
-الإعداد)، بيركّب الـ git hooks، بيوصّل كل أداة مختارة، وبيعمل gitignore للـ marker.
-بعد كده:
+**push mode** — مربوط بالـ commit اللي هيتدفع:
 
-1. عدّل `.review-gate/gate.config.json` بحيث أوامر الـ verify تطابق مشروعك.
-2. اعمل commit لملفات review-gate (أول commit بيتفرض عليه برضه — راجعه واعمله attest).
-3. أي حد بيعمل clone للريبو يشغّل **مرة واحدة**: `git config core.hooksPath .githooks`.
+```bash
+git commit -m "your message"
+bash .review-gate/review-gate.sh attest --ran review,clean-code,docs
+git push
+```
 
-### تغطية الأدوات
+الـ pre-push hook بيتحقق من الـ refs اللي Git بيدفعها فعلًا، مش بس HEAD. (`gh pr create`
+مش Git hook عام؛ تكامل Claude بيمنعه، بس للفرض المضمون على مستوى PR استخدم CI.) في push
+mode الـ attest بيعمل `git fetch` best-effort بـ timeout عشان يحسب الـ base على الـ remote
+بتاعك — وبيشتغل offline برضه (بيرجع للـ base المحلي).
 
-| المُنفِّذ | الفرض إزاي | بيتقال يراجع إزاي |
-|----------|-----------|-------------------|
-| تيرمنال / إنسان / أي أداة | `pre-commit` / `pre-push` git hook | — (تمشي على `GATE.md`) |
-| Claude Code | git hook + PreToolUse hook | `CLAUDE.md` + `.claude/agents` + `.claude/skills` (subagents بالتوازي) |
-| OpenAI Codex (وغيره) | git hook | `AGENTS.md` |
-| Cursor | git hook | `.cursor/rules/review-gate.mdc` |
-| Windsurf | git hook | `.windsurfrules` |
+### التثبيت السريع
 
-الأدوات اللي مابتعملش subagents بتطبّق الأجنتس/الـ guard-skills كـ **checklists** في
-مرور واحد — الفرض واحد، بس عمق المراجعة بيختلف.
+```bash
+bash install.sh /path/to/your-repo
+```
 
-### ظبط الـ verify (أي لغة)
+**بتسأل، مش بتخمّن.** من غير flags في تيرمنال، بتكتشف مشروعك وبعدين **بتسألك تأكّد**:
 
-`.review-gate/gate.config.json` بيحدّد 3 أوامر. لو شِلت `verify` بيرجع لافتراضي Node
-(`tsc` + `eslint` + `vitest`). (شوف المثال الإنجليزي فوق.)
+- **الوضع** — `commit` ولا `push` (اقتراح من وجود remote)،
+- **الأدوات** — اكتشاف من `.cursor/`/`CLAUDE.md`/`AGENTS.md`/`.windsurfrules` ("الكل" لو مفيش)،
+- **verify preset** — node / python / go / minimal (اكتشاف من ملفات المشروع).
 
-- `perFile: true` بيضيف الملفات المتغيّرة كـ args.
-- `perFile: false` بيشغّل الأمر مرة واحدة على المشروع كله.
-- `enabled: false` بيسكِّب الخطوة (من غير فشل). مشروع من غير tests/linter لسه بياخد
-  فرض **المراجعة**.
+تتخطّى بالـ flags، أو `--yes` تاخد المكتشف (CI مابيسألش، فمايعلّقش):
 
-أمثلة جاهزة: [`gate/examples/`](gate/examples/) (python / go / minimal).
+```bash
+bash install.sh /path/to/your-repo --mode push --tools claude,cursor
+bash install.sh /path/to/your-repo --yes
+```
 
-### تنبيه "بوابة الذمة" (اقراه)
+القيم المدعومة: `claude,codex,cursor,windsurf`. ولو **أجنت AI** بيركّبها، بيسألك نفس
+الاختيارات **بلغتك** ويقترح أوامر الـ verify من مشروعك — شوف **[`SETUP.md`](SETUP.md)**.
 
-- الـ **verify** (typecheck/lint/test) بيتشغّل فعلًا ومفروض.
-- **إقرار المراجعة** (`--ran review`) على الذمة — البوابة ماتقدرش تجبر التفكير يحصل،
-  بس تخلّي النسيان مستحيل.
-- الـ git hook بيتعدّى بـ `--no-verify` (ده مخرج مقصود).
-- للفرض **الصلب** اللي محدش يقدر يعدّيه، ضيف CI job يعيد الـ verify على الـ PR —
-  قالب جاهز: [`integrations/ci/github-actions.yml`](integrations/ci/github-actions.yml).
+### الـ installer بيضيف إيه؟
+
+```text
+.review-gate/  (review-gate.sh, gate.config.json, GATE.md, agents/, skills/, setup.sh)
+.githooks/     (pre-commit, pre-push)
+```
+
+وكمان: يضبط `core.hooksPath` على `.githooks` (لو آمن)، يركّب ملفات تعليمات الـ AI، يضيف
+`.review-gate/.gate/` للـ `.gitignore`، ويثبّت الـ scripts/hooks على LF.
+
+**الـ hooks بتاعتك آمنة.** لو الريبو بيستخدم Husky أو hook manager تاني، review-gate
+**مش بتلمس** `core.hooksPath` بتاعك وبتطبعلك أوامر الربط اليدوي. ولو فيه
+`.githooks/pre-commit`/`pre-push` مش بتاع review-gate، الـ installer **بيسيبه زي ما هو**
+وبيطبعلك إزاي تربط review-gate فيه (استخدم `--force` للاستبدال) — عمره ما بيدوس على الـ
+hooks بتاعتك بصمت.
+
+### بعد التثبيت
+
+1. عدّل `.review-gate/gate.config.json` وظبط أوامر الـ verify حسب مشروعك.
+2. اعمل commit لملفات review-gate. أول commit نفسه gated — اعمل review + attest قبله.
+3. أي حد بيعمل clone يشغّل مرة واحدة: `bash .review-gate/setup.sh` (الـ git hooks محلية لكل clone).
+
+### ظبط verify
+
+الـ installer بيملّأ preset حسب الـ stack المكتشف، وانت تعدّله. مثال Python:
+
+```json
+{
+  "gateMode": "commit",
+  "verify": {
+    "typecheck": { "cmd": "python -m mypy .",      "perFile": false, "enabled": true },
+    "lint":      { "cmd": "python -m ruff check",  "perFile": true,  "enabled": true },
+    "test":      { "cmd": "python -m pytest -q",   "perFile": false, "enabled": true }
+  },
+  "lintableExtensions": ["py"],
+  "codeExtensions": ["py"]
+}
+```
+
+`perFile: true` بتضيف الملفات المتغيرة كـ arguments آمنة (مثلًا
+`python -m ruff check changed_1.py changed_2.py`). `perFile: false` تشغّل الأمر مرة واحدة
+على المشروع كله. لو شلت `verify` بالكامل تستخدم Node defaults؛ لو خطوة ناقصة تبقى
+**disabled** مش بترجع لـ Node. أمثلة: `gate/examples/{python,go,minimal}.gate.config.json`.
+
+### خطوات المراجعة
+
+`--ran` لازم يحتوي `review`. وفيه guard steps إضافية حسب الملفات: `clean-code` (production
+code)، `test` (test files)، `docs` (docs/markdown).
+
+```bash
+bash .review-gate/review-gate.sh attest --ran review,clean-code,docs
+```
+
+لو خطوة مطلوبة ناقصة، `attest` بيرفض يكتب الـ marker.
+
+### Fail-closed
+
+الأداة بتقفل لو: `gate.config.json` مش موجود / JSON بايظ / `gateMode` غلط؛ الـ marker مش
+موجود / corrupt / لوضع مختلف؛ الـ staged tree اتغيرت بعد attest (commit)؛ HEAD أو الـ
+pushed ref اتغير بعد attest (push)؛ فيه untracked مش ignored أو unstaged tracked وقت
+attest؛ أو verify فشل. الملفات الـ ignored لا تمنع attest.
+
+### CI
+
+ضيف الـ workflow (`integrations/ci/github-actions.yml`) وخلّيه required. بيشغّل
+`bash .review-gate/review-gate.sh ci-verify` اللي بيعيد **نفس** الـ verify المحلي (بيحترم
+`perFile`). الـ CI مش هيثبت إن المراجعة الفكرية حصلت، لكنه يفرض الـ verify على كل PR —
+مهما حصل `--no-verify` محلي.
 
 ### المتطلبات
 
-`bash` و`git` وPython 3 على الـ `PATH` كـ `python3` أو `python`. على ويندوز شغّلها عبر Git Bash.
+- `bash` و`git` وPython 3 كـ `python3` أو `python`. لو بيئتك فيها python غريب، حدّد واحد:
+  `REVIEW_GATE_PYTHON=/usr/bin/python3 bash .review-gate/review-gate.sh attest --ran review,clean-code`
+- على Windows استخدم Git Bash. الـ scripts/hooks مثبتة على LF. لو مفيش Python، الأداة تفشل
+  مقفولة. GNU `timeout` بيستخدم لو موجود، ولو مفيش الأداة تكمل عادي (macOS الافتراضي).
 
-### الحقوق والترخيص
+### الخصوصية
 
-- **review-gate** — من تنفيذ **Fouda**، ترخيص MIT (شوف [`LICENSE`](LICENSE)).
-- **الـ Guard skills** (`clean-code-guard`، `test-guard`، `docs-guard`) — من عمل
-  **Ahmed Nagdy** ([@amElnagdy](https://github.com/amElnagdy/guard-skills))، ترخيص
-  MIT، متضمّنة من غير تعديل مع الحفاظ على ترخيصها (شوف [`NOTICE`](NOTICE)).
+`review-gate` **لا تجمع** أي telemetry. مابتبعتش الكود ولا أسماء الملفات ولا الـ diffs ولا
+الأوامر ولا أي metadata لأي مكان. كله بيشتغل محليًا؛ الوصول الوحيد للنت هو `git fetch`
+بتاعك (في push mode، best-effort) عشان يحسب base على الـ remote **بتاعك**.
+
+### الاختبارات
+
+```bash
+bash tests/run.sh    # الـ suite الكامل
+bash tests/{verify,smoke,push,install,ci}.sh   # كل واحد لوحده
+```
+
+### الحدود
+
+**لا** تستبدل حكم المبرمج ولا CI، ولا تمنع تخطّي محلي مصمم، ولا تضمن إن المراجعة كانت
+بعمق، ولا تعمل sandbox للـ AI، ولا تحمي secrets. **لكنها** تصعّب نسيان الـ review، تجبر الـ
+verify يشتغل، تربط الموافقة بنفس التغيير، تلغيها لو التغيير اتغير، وتدّي workflows الـ AI
+default أأمن.
+
+### الحقوق
+
+- `review-gate` — من تنفيذ **Fouda**، ترخيص MIT.
+- الـ guard skills (`clean-code-guard`, `test-guard`, `docs-guard`) من عمل **Ahmed Nagdy**
+  ([@amElnagdy](https://github.com/amElnagdy/guard-skills))، ترخيص MIT، مضافة مع الحفاظ على
+  الترخيص. راجع `NOTICE`.
