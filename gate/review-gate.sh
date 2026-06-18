@@ -17,7 +17,7 @@
 # THREAT MODEL — an HONESTY gate, not an adversarial sandbox. It makes the
 # ACCIDENTAL skip impossible; a determined caller can still bypass it (e.g.
 # `git commit --no-verify`, or by editing the config). Assumes a COOPERATIVE
-# caller. For un-bypassable enforcement, pair it with a CI check.
+# caller. For stronger, server-side enforcement, pair it with a CI check.
 #
 # Sub-commands:
 #   precommit            git pre-commit hook entrypoint (commit mode). Aborts the

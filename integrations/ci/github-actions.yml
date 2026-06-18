@@ -1,9 +1,11 @@
-# review-gate — CI companion (un-bypassable enforcement).
+# review-gate — CI companion (server-side verification).
 #
 # The local git hook is an HONESTY gate: it can be bypassed with `--no-verify`.
 # This workflow re-runs the SAME verify commands from .review-gate/gate.config.json
-# in CI, where they can't be skipped — so a bypassed local commit still fails the
-# pull request. Copy this file to .github/workflows/review-gate.yml in your repo
+# in CI — so a bypassed local commit still fails the pull request. Note this is NOT
+# a hard lock: the workflow reads policy from the PR's own .review-gate/**, so a PR
+# can weaken it. Protect those paths via CODEOWNERS (or run verify from the base
+# ref) for true enforcement. Copy this file to .github/workflows/review-gate.yml
 # and adjust the runtime setup (Node/Python/Go/...) to your stack.
 name: review-gate verify
 on:

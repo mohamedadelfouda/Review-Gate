@@ -39,7 +39,7 @@ until it's done.
 **Enforcement:** the `pre-push` git hook (fires for any tool/terminal) + an
 optional Claude Code PreToolUse hook. It's an **honesty gate**, not a sandbox —
 the escape hatch is `git push --no-verify`; don't use it to skip the review. For
-un-bypassable enforcement, add a CI check that re-runs verify on the PR.
+stronger, server-side enforcement, add a CI check that re-runs verify on the PR.
 
 > Verify commands are configured in `.review-gate/gate.config.json`
 > (`gateMode` must stay `"push"`).

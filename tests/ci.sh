@@ -13,7 +13,10 @@ git init -q; git config user.email t@example.com; git config user.name tester
 git checkout -q -b main 2>/dev/null || true
 echo hi > a.txt; git add a.txt; git commit -qm init
 
-bash "$KIT/install.sh" "$TMP" --mode commit --tools claude --yes >/dev/null
+# --tools codex keeps the install tool-light (no .claude agent tree copied) — the
+# gate path that ci-verify uses is installed regardless of tool, and this avoids
+# dozens of CRLF warnings when the Claude tree is copied on Windows checkouts.
+bash "$KIT/install.sh" "$TMP" --mode commit --tools codex --yes >/dev/null
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 

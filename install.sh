@@ -182,13 +182,14 @@ echo "  ✓ .review-gate/GATE.md ($GATE_MODE protocol)"
 
 # ── 2. git hooks (universal enforcement) ────────────────────────────────────
 mkdir -p "$TARGET/.githooks"
-HOOK_SKIPPED=0
+HOOK_SKIPPED=0; SKIPPED_PRECOMMIT=0; SKIPPED_PREPUSH=0
 install_hook() {  # src dst entrypoint — never clobber a foreign hook (unless --force)
   local src="$1" dst="$2" entry="$3"
   # Recognize OUR hook by a PRECISE sentinel, not just the word "review-gate" — a
   # user hook that merely CALLS review-gate must NOT be treated as ours + clobbered.
   if [ -f "$dst" ] && ! grep -q "review-gate:managed-hook" "$dst" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
     HOOK_SKIPPED=1
+    case "$entry" in precommit) SKIPPED_PRECOMMIT=1 ;; prepush) SKIPPED_PREPUSH=1 ;; esac
     echo "  ⚠ existing $(basename "$dst") (not review-gate's) — NOT overwriting it."
     echo "    To enforce review-gate, add these lines to it (or re-run with --force):"
     echo "      ROOT=\"\$(git rev-parse --show-toplevel)\""
@@ -205,7 +206,7 @@ if [ -z "$CUR_HP" ] || [ "$CUR_HP" = ".githooks" ]; then
   git -C "$TARGET" config core.hooksPath .githooks
   echo "  ✓ git config core.hooksPath = .githooks"
 else
-  HOOK_SKIPPED=1
+  HOOK_SKIPPED=1; SKIPPED_PRECOMMIT=1; SKIPPED_PREPUSH=1   # foreign hooksPath disables BOTH our hooks
   echo "  ⚠ ENFORCEMENT NOT INSTALLED — core.hooksPath is already '$CUR_HP' (husky/other);"
   echo "    review-gate did NOT override it. Until you wire it in, commits/pushes are NOT gated."
   echo "    Add to your existing hooks (as a normal line, or as 'exec' only if it's the LAST line):"
@@ -283,15 +284,21 @@ else
 fi
 
 echo
-if [ "$HOOK_SKIPPED" -eq 1 ]; then
-  echo "⚠⚠ review-gate's FILES are installed, but ENFORCEMENT is NOT active for the hook(s)"
-  echo "    skipped above — a foreign hook is in place. Wire review-gate into it manually"
-  echo "    (see the lines printed above) or re-run with --force. Until then, commits/pushes"
-  echo "    are NOT gated."
+# Only the hook that ACTUALLY gates this mode makes enforcement pending: pre-commit
+# in commit mode, pre-push in push mode. A foreign pre-push while you gate on commit
+# (or vice-versa) is harmless for your chosen mode — don't scare the user about it.
+if [ "$GATE_MODE" = commit ]; then RELEVANT_SKIP="$SKIPPED_PRECOMMIT"; else RELEVANT_SKIP="$SKIPPED_PREPUSH"; fi
+if [ "$RELEVANT_SKIP" -eq 1 ]; then
+  echo "⚠⚠ review-gate's FILES are installed, but ENFORCEMENT is NOT active — the $GATE_MODE-gating"
+  echo "    hook is a foreign hook (see above). Wire review-gate into it manually (the lines printed"
+  echo "    above) or re-run with --force. Until then, ${GATE_MODE}s are NOT gated."
   echo
-fi
-if [ "$HOOK_SKIPPED" -eq 1 ]; then
-  echo "✅ review-gate FILES installed [$GATE_MODE mode] in $TARGET — enforcement PENDING (wire the skipped hook above)"
+  echo "✅ review-gate FILES installed [$GATE_MODE mode] in $TARGET — enforcement PENDING (wire the $GATE_MODE hook above)"
+elif [ "$HOOK_SKIPPED" -eq 1 ]; then
+  echo "ℹ A non-$GATE_MODE hook was left in place (see above); it does NOT affect $GATE_MODE gating,"
+  echo "  which is active. Wire review-gate into it too if you later switch modes."
+  echo
+  echo "✅ review-gate installed [$GATE_MODE mode] in $TARGET"
 else
   echo "✅ review-gate installed [$GATE_MODE mode] in $TARGET"
 fi
@@ -301,6 +308,6 @@ echo "      (examples in $SCRIPT_DIR/gate/examples/). Keep gateMode = \"$GATE_MO
 echo "   2) Commit the review-gate files. (The FIRST commit is gated too — run the review + attest for it.)"
 echo "   3) Anyone who clones this repo runs once:  bash .review-gate/setup.sh"
 echo "      (or: git config core.hooksPath .githooks — git hooks are per-clone.)"
-echo "   • Optional un-bypassable enforcement: copy $SCRIPT_DIR/integrations/ci/github-actions.yml"
+echo "   • Optional server-side CI verification: copy $SCRIPT_DIR/integrations/ci/github-actions.yml"
 echo "     to .github/workflows/review-gate.yml (re-runs verify on every PR)."
 echo "   4) If using Claude Code: restart it (or open /hooks) so the PreToolUse hook loads."
