@@ -99,6 +99,7 @@ import json, sys, shlex
 p = sys.argv[1]
 try: cfg = json.load(open(p))
 except Exception: cfg = {}
+has_verify = "verify" in cfg
 verify = cfg.get("verify") or {}
 DEFAULTS = {
     "typecheck": {"cmd": "node_modules/.bin/tsc --noEmit", "perFile": False, "enabled": True},
@@ -107,10 +108,10 @@ DEFAULTS = {
 }
 def step(name):
     d = DEFAULTS[name]; s = verify.get(name)
-    # If a 'verify' block is present but THIS step is omitted, treat it as
-    # DISABLED (not Node-defaulted) — a Python/Go user who sets only lint+test
-    # must not silently inherit the Node 'tsc' default for typecheck.
-    if s is None: s = {"enabled": False} if verify else d
+    # If a 'verify' block is present (even an empty {}) but THIS step is omitted,
+    # treat it as DISABLED (not Node-defaulted) — a Python/Go user who sets only
+    # lint+test must not silently inherit the Node 'tsc' default for typecheck.
+    if s is None: s = {"enabled": False} if has_verify else d
     cmd = s.get("cmd", d["cmd"]); perfile = s.get("perFile", d["perFile"])
     enabled = s.get("enabled", d["enabled"] if cmd else False)
     return cmd, perfile, enabled
