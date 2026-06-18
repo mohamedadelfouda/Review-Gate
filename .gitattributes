@@ -1,5 +1,7 @@
-# Shell scripts and git hooks MUST stay LF on every OS, or a CRLF shebang
-# (\r) breaks them on macOS/Linux (and Git Bash). Do not change this.
+# Normalize ALL text files to LF in the repo (README, configs, docs, ...) — and
+# shell scripts + git hooks MUST stay LF on every OS, or a CRLF shebang (\r) breaks
+# them on macOS/Linux (and Git Bash). Do not change this.
+* text=auto eol=lf
 *.sh            text eol=lf
 githooks/*      text eol=lf
 .githooks/*     text eol=lf

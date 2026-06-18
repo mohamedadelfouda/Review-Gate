@@ -266,6 +266,11 @@ changed files, others whole-project). CI cannot prove a review was thoughtful, b
 enforces the real verify step on every pull request — regardless of any local
 `--no-verify`.
 
+> **Still honesty-based, not a hard lock.** The CI check runs the gate + config from
+> the PR's own content, so a PR author can weaken `gate.config.json` or the gate
+> itself and turn the check green. For a true lock, protect `.review-gate/**` with
+> required review (e.g. CODEOWNERS), or run the gate + config from your base branch.
+
 ### Requirements
 
 - `bash`, `git`, and Python 3 as `python3` or `python`. If your environment has a
@@ -482,6 +487,10 @@ attest؛ أو verify فشل. الملفات الـ ignored لا تمنع attest.
 `bash .review-gate/review-gate.sh ci-verify` اللي بيعيد **نفس** الـ verify المحلي (بيحترم
 `perFile`). الـ CI مش هيثبت إن المراجعة الفكرية حصلت، لكنه يفرض الـ verify على كل PR —
 مهما حصل `--no-verify` محلي.
+
+> **برضه honesty مش قفل صلب.** الـ CI بيشغّل البوابة + الإعداد من محتوى الـ PR نفسه، فصاحب
+> الـ PR يقدر يضعّف `gate.config.json` أو البوابة ويخلّي الـ check أخضر. لقفل حقيقي، احمِ
+> `.review-gate/**` بمراجعة إلزامية (CODEOWNERS)، أو شغّل البوابة + الإعداد من الـ base branch.
 
 ### المتطلبات
 

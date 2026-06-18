@@ -205,11 +205,12 @@ if [ -z "$CUR_HP" ] || [ "$CUR_HP" = ".githooks" ]; then
   git -C "$TARGET" config core.hooksPath .githooks
   echo "  ✓ git config core.hooksPath = .githooks"
 else
+  HOOK_SKIPPED=1
   echo "  ⚠ ENFORCEMENT NOT INSTALLED — core.hooksPath is already '$CUR_HP' (husky/other);"
   echo "    review-gate did NOT override it. Until you wire it in, commits/pushes are NOT gated."
-  echo "    Add these two lines yourself:"
-  echo "      → $CUR_HP/pre-commit :  ROOT=\"\$(git rev-parse --show-toplevel)\"; exec bash \"\$ROOT/.review-gate/review-gate.sh\" precommit"
-  echo "      → $CUR_HP/pre-push   :  ROOT=\"\$(git rev-parse --show-toplevel)\"; exec bash \"\$ROOT/.review-gate/review-gate.sh\" prepush"
+  echo "    Add to your existing hooks (as a normal line, or as 'exec' only if it's the LAST line):"
+  echo "      → $CUR_HP/pre-commit :  bash \"\$(git rev-parse --show-toplevel)/.review-gate/review-gate.sh\" precommit || exit \$?"
+  echo "      → $CUR_HP/pre-push   :  bash \"\$(git rev-parse --show-toplevel)/.review-gate/review-gate.sh\" prepush || exit \$?"
 fi
 
 # ── 3. per-tool integrations ────────────────────────────────────────────────
@@ -289,7 +290,11 @@ if [ "$HOOK_SKIPPED" -eq 1 ]; then
   echo "    are NOT gated."
   echo
 fi
-echo "✅ review-gate installed [$GATE_MODE mode] in $TARGET"
+if [ "$HOOK_SKIPPED" -eq 1 ]; then
+  echo "✅ review-gate FILES installed [$GATE_MODE mode] in $TARGET — enforcement PENDING (wire the skipped hook above)"
+else
+  echo "✅ review-gate installed [$GATE_MODE mode] in $TARGET"
+fi
 echo "   Next:"
 echo "   1) Edit .review-gate/gate.config.json so verify (typecheck/lint/test) matches this project"
 echo "      (examples in $SCRIPT_DIR/gate/examples/). Keep gateMode = \"$GATE_MODE\"."

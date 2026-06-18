@@ -45,4 +45,9 @@ if bash .review-gate/review-gate.sh ci-verify >/dev/null 2>&1; then
   fail "ci-verify missed an earlier commit's file (no base must check ALL files, not just the tip)"
 fi
 
+# REVIEW_GATE_CI_BASE (the GitHub-event path) narrows the diff to a given base:
+# pointing it at the 'flag' commit excludes flag.txt, so the same lint now passes.
+REVIEW_GATE_CI_BASE="$(git rev-parse HEAD~1)" bash .review-gate/review-gate.sh ci-verify >/dev/null 2>&1 \
+  || fail "ci-verify did not honor REVIEW_GATE_CI_BASE (should diff only from the given base)"
+
 echo "PASS: review-gate ci-verify test"
