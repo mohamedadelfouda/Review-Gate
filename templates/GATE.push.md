@@ -1,9 +1,11 @@
 # Review Gate — Pre-Push Protocol (MANDATORY)
 
-This repo enforces review at **`git push` / `gh pr create`** time
-(`gateMode: push`). Before pushing ANY work or opening a PR, always run this gate
-in order — even if the user only says "push". The pre-push git hook BLOCKS the
-push until it's done.
+This repo enforces review at **`git push`** time (`gateMode: push`). The pre-push
+git hook catches `git push` for every actor (terminal/human/any tool); the Claude
+integration additionally blocks `gh pr create` — for guaranteed PR-level
+enforcement add a CI check. Before pushing ANY work or opening a PR, always run
+this gate in order — even if the user only says "push". The hook BLOCKS the push
+until it's done.
 
 1. **Review the change** (the branch diff vs the base) across the relevant
    dimensions — in parallel if your tool supports subagents — using the agents in

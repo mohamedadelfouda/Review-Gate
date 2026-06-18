@@ -1,5 +1,6 @@
 {
-  "$comment": "Example for a Go project (go vet + golangci-lint + go test). Drop as .claude/gate.config.json.",
+  "$comment": "Example for a Go project (go vet + golangci-lint + go test). Save as .review-gate/gate.config.json. If MERGING into an existing config, copy only verify/extensions and KEEP your own gateMode.",
+  "gateMode": "commit",
   "verify": {
     "typecheck": {
       "cmd": "go vet ./...",

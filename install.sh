@@ -112,9 +112,11 @@ if [ -z "$CUR_HP" ] || [ "$CUR_HP" = ".githooks" ]; then
   git -C "$TARGET" config core.hooksPath .githooks
   echo "  ✓ git config core.hooksPath = .githooks"
 else
-  echo "  ! core.hooksPath is already '$CUR_HP' (husky/other). NOT overriding."
-  echo "    Add to $CUR_HP/pre-commit AND $CUR_HP/pre-push:"
-  echo "      ROOT=\"\$(git rev-parse --show-toplevel)\"; exec bash \"\$ROOT/.review-gate/review-gate.sh\" precommit   # (prepush in pre-push)"
+  echo "  ⚠ ENFORCEMENT NOT INSTALLED — core.hooksPath is already '$CUR_HP' (husky/other);"
+  echo "    review-gate did NOT override it. Until you wire it in, commits/pushes are NOT gated."
+  echo "    Add these two lines yourself:"
+  echo "      → $CUR_HP/pre-commit :  ROOT=\"\$(git rev-parse --show-toplevel)\"; exec bash \"\$ROOT/.review-gate/review-gate.sh\" precommit"
+  echo "      → $CUR_HP/pre-push   :  ROOT=\"\$(git rev-parse --show-toplevel)\"; exec bash \"\$ROOT/.review-gate/review-gate.sh\" prepush"
 fi
 
 # ── 3. per-tool integrations ────────────────────────────────────────────────
@@ -139,12 +141,16 @@ if blk is None: blk = {"matcher": "Bash", "hooks": []}; pre.append(blk)
 bh = blk.setdefault("hooks", [])
 cmd = "bash .review-gate/review-gate.sh check"
 conds = ["Bash(git commit*)"] if mode == "commit" else ["Bash(git push*)", "Bash(gh pr create*)"]
-if any("review-gate.sh" in (h.get("command") or "") for h in bh):
-    print("  - .claude/settings.json hook already present")
+existing = [h for h in bh if "review-gate.sh" in (h.get("command") or "")]
+if {h.get("if") for h in existing} == set(conds):
+    print("  - .claude/settings.json hook already correct for this mode")
 else:
+    # Rebuild from scratch so a mode change (commit<->push) updates the condition
+    # instead of leaving a stale one behind.
+    bh[:] = [h for h in bh if "review-gate.sh" not in (h.get("command") or "")]
     for c in conds: bh.append({"type":"command","command":cmd,"if":c,"timeout":30,"statusMessage":"Review Gate"})
     open(path, "w").write(json.dumps(data, indent=2) + "\n")
-    print(f"  - .claude/settings.json PreToolUse hook wired ({', '.join(conds)})")
+    print(f"  - .claude/settings.json PreToolUse hook set for {mode} mode ({', '.join(conds)})")
 PY
 fi
 

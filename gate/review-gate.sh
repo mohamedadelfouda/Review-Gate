@@ -54,13 +54,16 @@ print(json.dumps({
 
 repo_root() { git rev-parse --show-toplevel 2>/dev/null; }
 
-read_gate_mode() {  # $1 = config path; prints push|commit (default push)
-  python3 - "$1" <<'PY' 2>/dev/null || echo "push"
-import json, sys
+read_gate_mode() {  # $1 = config path; prints push | commit | invalid
+  python3 - "$1" <<'PY' 2>/dev/null || echo "invalid"
+import json, os, sys
+p = sys.argv[1]
+if not os.path.exists(p):
+    print("push"); raise SystemExit          # no config -> callers gate on existence
 try:
-    cfg = json.load(open(sys.argv[1]))
+    cfg = json.load(open(p))
 except Exception:
-    cfg = {}
+    print("invalid"); raise SystemExit        # present but unparseable -> fail closed
 m = str(cfg.get("gateMode", "push")).strip().lower()
 print(m if m in ("push", "commit") else "push")
 PY
@@ -149,7 +152,15 @@ if [ "$MODE" = "precommit" ] || [ "$MODE" = "prepush" ]; then
   [ "$MODE" = "prepush" ] && cat >/dev/null 2>&1 || true   # drain hook stdin (refs)
   ROOT="$(repo_root)"; [ -z "$ROOT" ] && exit 0
   [ -f "$ROOT/$GATE_SUBDIR/gate.config.json" ] || exit 0     # repo not gated
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf '\n🔒 review-gate: python3 is required but not on PATH — failing closed. Install python3 (or bypass with --no-verify).\n\n' >&2
+    exit 1
+  fi
   GATE_MODE="$(read_gate_mode "$ROOT/$GATE_SUBDIR/gate.config.json")"
+  if [ "$GATE_MODE" = "invalid" ]; then
+    printf '\n🔒 review-gate: %s/gate.config.json is present but invalid JSON — failing closed. Fix it before committing/pushing.\n\n' "$GATE_SUBDIR" >&2
+    exit 1
+  fi
 
   # Each hook only acts in its matching mode (so both can be installed at once).
   if { [ "$MODE" = "precommit" ] && [ "$GATE_MODE" != "commit" ]; } ||
@@ -207,14 +218,14 @@ def classify(seg):
         for t in rest[i+1:]:
             if t == "--": break
             opts.append(t)
-        if mode == "push" and sub == "push":
+        if sub == "push" and mode in ("push", "invalid"):
             return "SKIP" if any(o in INSPECT for o in opts) else "PUSH"
-        if mode == "commit" and sub == "commit":
+        if sub == "commit" and mode in ("commit", "invalid"):
             if any(o in INSPECT for o in opts): return "SKIP"
             allflag = any(o in ALL_FLAGS for o in opts) or any(re.match(r"^-[A-Za-z]*a[A-Za-z]*$", o) for o in opts)
             return "COMMIT_ALL" if allflag else "COMMIT"
         return "SKIP"
-    if head == "gh" and mode == "push" and len(rest) >= 2 and rest[0] == "pr" and rest[1] == "create":
+    if head == "gh" and mode in ("push", "invalid") and len(rest) >= 2 and rest[0] == "pr" and rest[1] == "create":
         opts = []
         for t in rest[2:]:
             if t == "--": break
@@ -230,6 +241,9 @@ else:
 ' 2>/dev/null || echo "SKIP")"
 
   [ "$VERDICT" = "SKIP" ] && exit 0
+  if [ "$GATE_MODE" = "invalid" ]; then
+    deny "🔒 review-gate: $GATE_SUBDIR/gate.config.json is invalid JSON — fix it before committing/pushing."
+  fi
   REASON="$(gate_block_reason "$VERDICT")"
   [ -n "$REASON" ] && deny "$REASON"
   exit 0
@@ -261,8 +275,24 @@ if [ "$MODE" = "attest" ]; then
   CONFIG_FILE="$ROOT/$GATE_SUBDIR/gate.config.json"
   mkdir -p "$GATE_DIR"
   GATE_MODE="$(read_gate_mode "$CONFIG_FILE")"
+  if [ "$GATE_MODE" = "invalid" ]; then echo "❌ attest: $GATE_SUBDIR/gate.config.json is invalid JSON — fix it first." >&2; exit 1; fi
 
   echo "▶ review-gate attest [$GATE_MODE mode] — $BRANCH @ ${HEAD:0:8}"
+
+  # P0: verify runs against the WORKING TREE, so it must match what the marker
+  # binds to — otherwise verify could pass on good working-tree content while a
+  # different (bad) staged tree / HEAD is what actually lands.
+  if [ "$GATE_MODE" = "commit" ]; then
+    if ! git diff --quiet 2>/dev/null; then
+      echo "❌ attest: unstaged changes to tracked files. verify runs on the working tree — stage everything first (git add -A) so the verified content IS the staged tree that gets committed." >&2
+      exit 1
+    fi
+  else
+    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+      echo "❌ attest: working tree / index is dirty. In push mode the marker binds to HEAD — commit or stash all changes first so verify matches what's pushed." >&2
+      exit 1
+    fi
+  fi
 
   CFG_SH="$(python3 - "$CONFIG_FILE" <<'PY'
 import json, sys, shlex
@@ -277,7 +307,10 @@ DEFAULTS = {
 }
 def step(name):
     d = DEFAULTS[name]; s = verify.get(name)
-    if s is None: s = {} if verify else d
+    # If a 'verify' block is present but THIS step is omitted, treat it as
+    # DISABLED (not Node-defaulted) — a Python/Go user who sets only lint+test
+    # must not silently inherit the Node 'tsc' default for typecheck.
+    if s is None: s = {"enabled": False} if verify else d
     cmd = s.get("cmd", d["cmd"]); perfile = s.get("perFile", d["perFile"])
     enabled = s.get("enabled", d["enabled"] if cmd else False)
     return cmd, perfile, enabled
@@ -354,7 +387,8 @@ print(",".join([r for r in req if r not in ran]))
   echo "  • gate steps acknowledged: ${RAN:-<none>} (required: ${REQUIRED:-none})"
 
   TOUCHED_Z="$(mktemp -t gate-touched.XXXXXX)"
-  trap 'rm -f "$TOUCHED_Z"' EXIT
+  TC_LOG="$(mktemp -t gate-tc.XXXXXX)"; LINT_LOG="$(mktemp -t gate-lint.XXXXXX)"; TEST_LOG="$(mktemp -t gate-test.XXXXXX)"
+  trap 'rm -f "$TOUCHED_Z" "$TC_LOG" "$LINT_LOG" "$TEST_LOG"' EXIT
   ACMR_NAMES | LINTABLE_EXT="$LINTABLE_EXT" python3 -c '
 import sys, re, os
 data = sys.stdin.buffer.read().split(b"\x00")
@@ -378,8 +412,8 @@ sys.stdout.buffer.write(b"\x00".join(out))
     echo "  • typecheck: disabled — SKIP"
   else
     echo "  • typecheck: $TYPECHECK_CMD ..."
-    if bash -c "$TYPECHECK_CMD" >/tmp/gate-typecheck.log 2>&1; then TYPECHECK_RES="pass"; echo "    ✓ typecheck clean"
-    else TYPECHECK_RES="fail"; FAILED=1; echo "    ✗ typecheck failed${WORKTREE_HINT}:"; tail -15 /tmp/gate-typecheck.log | sed 's/^/      /'; fi
+    if bash -c "$TYPECHECK_CMD" >"$TC_LOG" 2>&1; then TYPECHECK_RES="pass"; echo "    ✓ typecheck clean"
+    else TYPECHECK_RES="fail"; FAILED=1; echo "    ✗ typecheck failed${WORKTREE_HINT}:"; tail -15 "$TC_LOG" | sed 's/^/      /'; fi
   fi
 
   if [ "$LINT_ENABLED" != "1" ] || [ -z "$LINT_CMD" ]; then
@@ -389,10 +423,10 @@ sys.stdout.buffer.write(b"\x00".join(out))
   else
     echo "  • lint: $LINT_CMD ($([ "$LINT_PERFILE" = "1" ] && echo "$NLINT file(s)" || echo "whole project")) ..."
     OK_RUN=0
-    if [ "$LINT_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec $c "$@"' _ "$LINT_CMD" < "$TOUCHED_Z" >/tmp/gate-lint.log 2>&1 && OK_RUN=1
-    else bash -c "$LINT_CMD" >/tmp/gate-lint.log 2>&1 && OK_RUN=1; fi
+    if [ "$LINT_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec $c "$@"' _ "$LINT_CMD" < "$TOUCHED_Z" >"$LINT_LOG" 2>&1 && OK_RUN=1
+    else bash -c "$LINT_CMD" >"$LINT_LOG" 2>&1 && OK_RUN=1; fi
     if [ "$OK_RUN" -eq 1 ]; then LINT_RES="pass"; echo "    ✓ lint clean"
-    else LINT_RES="fail"; FAILED=1; echo "    ✗ lint findings${WORKTREE_HINT}:"; tail -20 /tmp/gate-lint.log | sed 's/^/      /'; fi
+    else LINT_RES="fail"; FAILED=1; echo "    ✗ lint findings${WORKTREE_HINT}:"; tail -20 "$LINT_LOG" | sed 's/^/      /'; fi
   fi
 
   if [ "$TEST_ENABLED" != "1" ] || [ -z "$TEST_CMD" ]; then
@@ -402,10 +436,10 @@ sys.stdout.buffer.write(b"\x00".join(out))
   else
     echo "  • test: $TEST_CMD ($([ "$TEST_PERFILE" = "1" ] && echo "$NLINT file(s)" || echo "whole suite")) ..."
     OK_RUN=0
-    if [ "$TEST_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec $c "$@"' _ "$TEST_CMD" < "$TOUCHED_Z" >/tmp/gate-test.log 2>&1 && OK_RUN=1
-    else bash -c "$TEST_CMD" >/tmp/gate-test.log 2>&1 && OK_RUN=1; fi
+    if [ "$TEST_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec $c "$@"' _ "$TEST_CMD" < "$TOUCHED_Z" >"$TEST_LOG" 2>&1 && OK_RUN=1
+    else bash -c "$TEST_CMD" >"$TEST_LOG" 2>&1 && OK_RUN=1; fi
     if [ "$OK_RUN" -eq 1 ]; then TEST_RES="pass"; echo "    ✓ test passed"
-    else TEST_RES="fail"; FAILED=1; echo "    ✗ test failures${WORKTREE_HINT}:"; tail -25 /tmp/gate-test.log | sed 's/^/      /'; fi
+    else TEST_RES="fail"; FAILED=1; echo "    ✗ test failures${WORKTREE_HINT}:"; tail -25 "$TEST_LOG" | sed 's/^/      /'; fi
   fi
 
   OK="true"; [ "$FAILED" -eq 1 ] && OK="false"

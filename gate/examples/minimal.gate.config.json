@@ -1,5 +1,6 @@
 {
-  "$comment": "Minimal: no typecheck, only run the whole test suite. Use when the project has no typechecker/linter wired yet. The review + guard-skill acknowledgment still applies.",
+  "$comment": "Minimal: no typecheck/lint, only the whole test suite. Use when the project has no typechecker/linter yet. The review + guard-skill acknowledgment still applies. Save as .review-gate/gate.config.json; if MERGING, keep your own gateMode.",
+  "gateMode": "commit",
   "verify": {
     "typecheck": { "enabled": false },
     "lint": { "enabled": false },
