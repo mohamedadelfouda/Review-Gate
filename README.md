@@ -126,7 +126,8 @@ Ready-made examples: [`gate/examples/`](gate/examples/) (python, go, minimal).
 ### Requirements
 
 `bash`, `git`, and Python 3 on `PATH` as `python3` or `python` (used for JSON +
-safe arg parsing). On Windows, run via Git Bash.
+safe arg parsing) — or set `REVIEW_GATE_PYTHON` to pin a specific interpreter
+(e.g. `REVIEW_GATE_PYTHON=/usr/bin/python3`). On Windows, run via Git Bash.
 
 ### Credits & license
 

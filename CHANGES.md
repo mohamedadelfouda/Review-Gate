@@ -30,8 +30,9 @@ repo's own gate runs on every commit.
 
 ### Robustness / portability
 
-- **Python 3 is discovered as `python3` or `python`.** Hooks fail closed if
-  neither is present.
+- **Python 3 is discovered as `python3` or `python`**, or pinned via
+  `REVIEW_GATE_PYTHON` (an explicit interpreter path) for odd environments. Hooks
+  fail closed if none is present.
 - **The push-mode `git fetch` is time-boxed** (when GNU `timeout` is available) so
   an unreachable remote can't hang attest.
 - **The installer preserves an invalid existing `gate.config.json`** and aborts

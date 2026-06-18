@@ -31,7 +31,8 @@
 #                        the diff REQUIRES and refuses the marker unless --ran
 #                        covers them; then runs verify and writes the marker.
 #
-# Prerequisite: bash, git, and Python 3 on PATH as `python3` or `python` (JSON + safe arg parsing).
+# Prerequisite: bash, git, and Python 3 as `python3`/`python` on PATH (or set
+# REVIEW_GATE_PYTHON to an explicit interpreter). Python = JSON + safe arg parsing.
 # ──────────────────────────────────────────────────────────────────────────
 
 set -uo pipefail
@@ -54,10 +55,12 @@ print(json.dumps({
 
 repo_root() { git rev-parse --show-toplevel 2>/dev/null; }
 
-# Run Python 3, discovered as `python3` or `python` (some systems only ship the
-# latter). Returns 127 if neither is present so callers can fail closed.
+# Run Python 3, discovered as $REVIEW_GATE_PYTHON (explicit override) → `python3`
+# → `python` (some systems only ship the latter / a wrapped python3). Returns 127
+# if none is present so callers can fail closed.
 python_cmd() {
-  if command -v python3 >/dev/null 2>&1; then python3 "$@"
+  if [ -n "${REVIEW_GATE_PYTHON:-}" ]; then "$REVIEW_GATE_PYTHON" "$@"
+  elif command -v python3 >/dev/null 2>&1; then python3 "$@"
   elif command -v python >/dev/null 2>&1; then python "$@"
   else return 127; fi
 }
@@ -228,8 +231,8 @@ if [ "$MODE" = "precommit" ] || [ "$MODE" = "prepush" ]; then
     printf '\n🔒 review-gate: %s/gate.config.json is missing — failing closed. Restore it, or uninstall the gate (unset core.hooksPath / remove .githooks) to disable it.\n\n' "$GATE_SUBDIR" >&2
     exit 1
   fi
-  if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
-    printf '\n🔒 review-gate: Python 3 is required as python3 or python — failing closed. Install it (or bypass with --no-verify).\n\n' >&2
+  if [ -z "${REVIEW_GATE_PYTHON:-}" ] && ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+    printf '\n🔒 review-gate: Python 3 is required (REVIEW_GATE_PYTHON, python3, or python) — failing closed. Install it (or bypass with --no-verify).\n\n' >&2
     exit 1
   fi
   GATE_MODE="$(read_gate_mode "$ROOT/$GATE_SUBDIR/gate.config.json")"

@@ -23,8 +23,8 @@
 
 set -euo pipefail
 
-# Python 3 as python3 or python (some systems only ship the latter).
-py() { if command -v python3 >/dev/null 2>&1; then python3 "$@"; elif command -v python >/dev/null 2>&1; then python "$@"; else return 127; fi; }
+# Python 3 as $REVIEW_GATE_PYTHON (override) → python3 → python.
+py() { if [ -n "${REVIEW_GATE_PYTHON:-}" ]; then "$REVIEW_GATE_PYTHON" "$@"; elif command -v python3 >/dev/null 2>&1; then python3 "$@"; elif command -v python >/dev/null 2>&1; then python "$@"; else return 127; fi; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=""; GATE_MODE="commit"; TOOLS="all"; FORCE=0
@@ -45,7 +45,7 @@ done
 [ -d "$TARGET" ] || { echo "❌ target not found: $TARGET" >&2; exit 1; }
 TARGET="$(cd "$TARGET" && pwd)"
 git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1 || { echo "❌ $TARGET is not a git repo. Run 'git init' first." >&2; exit 1; }
-command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || { echo "❌ Python 3 (python3 or python) is required to install review-gate." >&2; exit 1; }
+[ -n "${REVIEW_GATE_PYTHON:-}" ] || command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || { echo "❌ Python 3 (REVIEW_GATE_PYTHON, python3, or python) is required to install review-gate." >&2; exit 1; }
 
 want_tool() { case ",$TOOLS," in *",all,"*) return 0 ;; *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 

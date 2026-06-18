@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # review-gate pre-push hook (universal enforcement for push-mode repos).
-# git passes the pushed refs on stdin — the gate ignores them.
+# git passes the pushed refs on stdin — the gate validates the actual commits being pushed.
 # Defers to the repo-local gate; no-ops if absent or not in push mode.
 # Bypass (honesty escape hatch): git push --no-verify
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
