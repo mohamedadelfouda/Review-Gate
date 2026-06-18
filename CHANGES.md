@@ -47,3 +47,7 @@ repo's own gate runs on every commit.
 
 - It remains an **honesty gate**: the local hook is bypassable with `--no-verify`.
   Pair it with the CI companion for un-bypassable enforcement.
+- **Self-hosted:** review-gate gates its own commits. Its `test` verify runs
+  `tests/run.sh`, which installs the gate into throwaway repos and exercises the
+  full block → attest → commit/push flow — so every commit tests the gate, with
+  the gate.
