@@ -1,0 +1,11 @@
+{
+  "$comment": "review-gate dogfoods ITSELF. gateMode commit; verify = shell syntax check + the smoke test. The active hooks (.githooks/) call the source gate/review-gate.sh directly (no installed copy).",
+  "gateMode": "commit",
+  "verify": {
+    "typecheck": { "cmd": "bash tests/verify.sh", "perFile": false, "enabled": true },
+    "lint": { "enabled": false },
+    "test": { "cmd": "bash tests/smoke.sh", "perFile": false, "enabled": true }
+  },
+  "lintableExtensions": ["sh"],
+  "codeExtensions": ["sh"]
+}

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# review-gate dogfood pre-commit hook. Unlike the INSTALLED hook (which calls
+# .review-gate/review-gate.sh), this repo IS the tool, so it runs the source
+# gate/review-gate.sh directly — no installed copy, no drift. Bypass: --no-verify
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$ROOT" ] && [ -f "$ROOT/gate/review-gate.sh" ] || exit 0
+exec bash "$ROOT/gate/review-gate.sh" precommit

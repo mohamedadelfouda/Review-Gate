@@ -1,0 +1,22 @@
+{
+  "$comment": "Example for a Python project (mypy + ruff + pytest). Drop as .claude/gate.config.json.",
+  "verify": {
+    "typecheck": {
+      "cmd": "python -m mypy .",
+      "perFile": false,
+      "enabled": true
+    },
+    "lint": {
+      "cmd": "python -m ruff check",
+      "perFile": true,
+      "enabled": true
+    },
+    "test": {
+      "cmd": "python -m pytest -q",
+      "perFile": false,
+      "enabled": true
+    }
+  },
+  "lintableExtensions": ["py"],
+  "codeExtensions": ["py"]
+}

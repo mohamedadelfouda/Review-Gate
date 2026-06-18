@@ -1,0 +1,21 @@
+review-gate
+Copyright (c) 2026 Fouda
+Licensed under the MIT License (see LICENSE).
+
+Created and maintained by Fouda.
+
+────────────────────────────────────────────────────────────────────────────
+Third-party components (vendored / redistributed)
+────────────────────────────────────────────────────────────────────────────
+
+Guard skills — clean-code-guard, test-guard, docs-guard
+  • Location:  skills/  (installed into .review-gate/skills/ and .claude/skills/)
+  • Author:    Ahmed Nagdy  (GitHub: @amElnagdy)
+  • Source:    https://github.com/amElnagdy/guard-skills
+  • License:   MIT — each skill keeps its original, unmodified LICENSE file.
+
+The guard skills are redistributed unmodified under the terms of their MIT
+license; their copyright notices and LICENSE files are preserved in full. All
+credit for the guard skills belongs to their original author, Ahmed Nagdy. If
+you use review-gate, consider following / starring the upstream guard-skills
+project for updates.

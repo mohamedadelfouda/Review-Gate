@@ -1,0 +1,10 @@
+{
+  "$comment": "Minimal: no typecheck, only run the whole test suite. Use when the project has no typechecker/linter wired yet. The review + guard-skill acknowledgment still applies.",
+  "verify": {
+    "typecheck": { "enabled": false },
+    "lint": { "enabled": false },
+    "test": { "cmd": "npm test --silent", "perFile": false, "enabled": true }
+  },
+  "lintableExtensions": ["ts", "tsx", "js", "jsx"],
+  "codeExtensions": ["ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "sh"]
+}

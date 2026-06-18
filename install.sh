@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# ──────────────────────────────────────────────────────────────────────────
+# review-gate installer — set up the review gate in a target repo.
+#
+# Usage:
+#   bash install.sh /path/to/repo [--mode push|commit] [--tools all|claude,codex,cursor,windsurf] [--force]
+#
+#   --mode   commit (default for local-only repos) | push
+#   --tools  which AI-tool integrations to wire (default: all). The git hook
+#            enforcement is ALWAYS installed regardless — it covers the terminal
+#            and any tool that runs git.
+#   --force  overwrite agents/skills/config/cursor-rule if they already exist.
+#
+# Installs:
+#   .review-gate/        review-gate.sh, gate.config.json, GATE.md, agents/, skills/
+#   .githooks/           pre-commit + pre-push  (+ git config core.hooksPath .githooks)
+#   per tool:  CLAUDE.md + .claude/{agents,skills,settings.json}  (claude)
+#              AGENTS.md                                          (codex & others)
+#              .cursor/rules/review-gate.mdc                      (cursor)
+#              .windsurfrules                                     (windsurf)
+#   .gitignore  += .review-gate/.gate/
+# ──────────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TARGET=""; GATE_MODE="commit"; TOOLS="all"; FORCE=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --mode)    GATE_MODE="${2:-commit}"; shift 2 ;;
+    --mode=*)  GATE_MODE="${1#--mode=}"; shift ;;
+    --tools)   TOOLS="${2:-all}"; shift 2 ;;
+    --tools=*) TOOLS="${1#--tools=}"; shift ;;
+    --force)   FORCE=1; shift ;;
+    -*)        echo "unknown option: $1" >&2; exit 2 ;;
+    *)         [ -z "$TARGET" ] && TARGET="$1"; shift ;;
+  esac
+done
+
+[ "$GATE_MODE" = push ] || [ "$GATE_MODE" = commit ] || { echo "❌ --mode must be push|commit" >&2; exit 2; }
+[ -n "$TARGET" ] || { echo "usage: bash install.sh /path/to/repo [--mode push|commit] [--tools all|claude,codex,cursor,windsurf] [--force]" >&2; exit 2; }
+[ -d "$TARGET" ] || { echo "❌ target not found: $TARGET" >&2; exit 1; }
+TARGET="$(cd "$TARGET" && pwd)"
+git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1 || { echo "❌ $TARGET is not a git repo. Run 'git init' first." >&2; exit 1; }
+
+want_tool() { case ",$TOOLS," in *",all,"*) return 0 ;; *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+copy_if() { local src="$1" dst="$2"; if [ -e "$dst" ] && [ "$FORCE" -ne 1 ]; then echo "  ~ kept $(basename "$dst")"; else cp -r "$src" "$dst"; echo "  ✓ $(basename "$dst")"; fi; }
+
+# Upsert a marked block (<!-- review-gate:begin/end -->) into a text file.
+upsert_block() {
+  TARGET_F="$1" SNIPPET_F="$2" python3 <<'PY'
+import os, re, sys
+try: sys.stdout.reconfigure(encoding="utf-8")
+except Exception: pass
+tf, sf = os.environ["TARGET_F"], os.environ["SNIPPET_F"]
+block = open(sf, encoding="utf-8").read().strip("\n")
+b, e = "<!-- review-gate:begin -->", "<!-- review-gate:end -->"
+try: cur = open(tf, encoding="utf-8").read()
+except FileNotFoundError: cur = ""
+if b in cur and e in cur:
+    new = re.sub(re.escape(b) + r".*?" + re.escape(e), block.replace("\\", "\\\\"), cur, flags=re.S)
+    act = "updated"
+else:
+    sep = "" if cur == "" else ("\n" if cur.endswith("\n") else "\n\n")
+    new = cur + sep + block + "\n"; act = "added"
+open(tf, "w", encoding="utf-8").write(new)
+print(f"  - {os.path.basename(tf)} {act}")
+PY
+}
+
+CG="$TARGET/.review-gate"
+echo "▶ Installing review-gate [$GATE_MODE mode, tools: $TOOLS] into $TARGET"
+
+# ── 1. .review-gate/ core ───────────────────────────────────────────────────
+mkdir -p "$CG/agents" "$CG/skills" "$CG/.gate"
+cp "$SCRIPT_DIR/gate/review-gate.sh" "$CG/review-gate.sh"; chmod +x "$CG/review-gate.sh"
+cp "$SCRIPT_DIR/setup.sh" "$CG/setup.sh"; chmod +x "$CG/setup.sh"
+echo "  ✓ .review-gate/review-gate.sh + setup.sh"
+
+copy_if "$SCRIPT_DIR/gate/gate.config.example.json" "$CG/gate.config.json"
+CG_CFG="$CG/gate.config.json" GATE_MODE="$GATE_MODE" python3 <<'PY'
+import json, os, sys
+try: sys.stdout.reconfigure(encoding="utf-8")
+except Exception: pass
+p, mode = os.environ["CG_CFG"], os.environ["GATE_MODE"]
+try: cfg = json.load(open(p))
+except Exception: cfg = {}
+if cfg.get("gateMode") != mode:
+    cfg["gateMode"] = mode
+    open(p, "w").write(json.dumps(cfg, indent=2) + "\n")
+    print(f"  - gate.config.json gateMode = '{mode}'")
+else:
+    print(f"  - gate.config.json gateMode already '{mode}'")
+PY
+
+for a in "$SCRIPT_DIR"/agents/*.md; do copy_if "$a" "$CG/agents/$(basename "$a")"; done
+for s in "$SCRIPT_DIR"/skills/*/; do copy_if "$s" "$CG/skills/$(basename "$s")"; done
+
+if [ "$GATE_MODE" = commit ]; then cp "$SCRIPT_DIR/templates/GATE.commit.md" "$CG/GATE.md"; else cp "$SCRIPT_DIR/templates/GATE.push.md" "$CG/GATE.md"; fi
+echo "  ✓ .review-gate/GATE.md ($GATE_MODE protocol)"
+
+# ── 2. git hooks (universal enforcement) ────────────────────────────────────
+mkdir -p "$TARGET/.githooks"
+cp "$SCRIPT_DIR/githooks/pre-commit" "$TARGET/.githooks/pre-commit"
+cp "$SCRIPT_DIR/githooks/pre-push"   "$TARGET/.githooks/pre-push"
+chmod +x "$TARGET/.githooks/pre-commit" "$TARGET/.githooks/pre-push"
+echo "  ✓ .githooks/pre-commit + pre-push"
+
+CUR_HP="$(git -C "$TARGET" config --local --get core.hooksPath 2>/dev/null || true)"
+if [ -z "$CUR_HP" ] || [ "$CUR_HP" = ".githooks" ]; then
+  git -C "$TARGET" config core.hooksPath .githooks
+  echo "  ✓ git config core.hooksPath = .githooks"
+else
+  echo "  ! core.hooksPath is already '$CUR_HP' (husky/other). NOT overriding."
+  echo "    Add to $CUR_HP/pre-commit AND $CUR_HP/pre-push:"
+  echo "      ROOT=\"\$(git rev-parse --show-toplevel)\"; exec bash \"\$ROOT/.review-gate/review-gate.sh\" precommit   # (prepush in pre-push)"
+fi
+
+# ── 3. per-tool integrations ────────────────────────────────────────────────
+if want_tool claude; then
+  echo "  claude:"
+  mkdir -p "$TARGET/.claude/agents" "$TARGET/.claude/skills"
+  for a in "$CG"/agents/*.md; do copy_if "$a" "$TARGET/.claude/agents/$(basename "$a")"; done
+  for s in "$CG"/skills/*/; do copy_if "$s" "$TARGET/.claude/skills/$(basename "$s")"; done
+  upsert_block "$TARGET/CLAUDE.md" "$SCRIPT_DIR/integrations/claude/CLAUDE.snippet.md"
+  CLAUDE_SETTINGS="$TARGET/.claude/settings.json" GATE_MODE="$GATE_MODE" python3 <<'PY'
+import json, os, sys
+try: sys.stdout.reconfigure(encoding="utf-8")
+except Exception: pass
+path, mode = os.environ["CLAUDE_SETTINGS"], os.environ["GATE_MODE"]
+try: data = json.load(open(path))
+except FileNotFoundError: data = {}
+except json.JSONDecodeError as e:
+    sys.stderr.write(f"  ! {path} invalid JSON ({e}); skipping hook wiring.\n"); raise SystemExit(0)
+pre = data.setdefault("hooks", {}).setdefault("PreToolUse", [])
+blk = next((b for b in pre if b.get("matcher") == "Bash"), None)
+if blk is None: blk = {"matcher": "Bash", "hooks": []}; pre.append(blk)
+bh = blk.setdefault("hooks", [])
+cmd = "bash .review-gate/review-gate.sh check"
+conds = ["Bash(git commit*)"] if mode == "commit" else ["Bash(git push*)", "Bash(gh pr create*)"]
+if any("review-gate.sh" in (h.get("command") or "") for h in bh):
+    print("  - .claude/settings.json hook already present")
+else:
+    for c in conds: bh.append({"type":"command","command":cmd,"if":c,"timeout":30,"statusMessage":"Review Gate"})
+    open(path, "w").write(json.dumps(data, indent=2) + "\n")
+    print(f"  - .claude/settings.json PreToolUse hook wired ({', '.join(conds)})")
+PY
+fi
+
+if want_tool codex; then
+  echo "  codex:"
+  upsert_block "$TARGET/AGENTS.md" "$SCRIPT_DIR/integrations/codex/AGENTS.md"
+fi
+
+if want_tool cursor; then
+  echo "  cursor:"
+  mkdir -p "$TARGET/.cursor/rules"
+  copy_if "$SCRIPT_DIR/integrations/cursor/review-gate.mdc" "$TARGET/.cursor/rules/review-gate.mdc"
+fi
+
+if want_tool windsurf; then
+  echo "  windsurf:"
+  upsert_block "$TARGET/.windsurfrules" "$SCRIPT_DIR/integrations/windsurf/windsurfrules.snippet"
+fi
+
+# ── 4a. .gitattributes — keep the installed shell scripts/hooks LF on every OS ─
+GA="$TARGET/.gitattributes"
+if [ -f "$GA" ] && grep -qF '.review-gate/review-gate.sh text eol=lf' "$GA" 2>/dev/null; then
+  echo "  ✓ .gitattributes already pins LF for the gate scripts"
+else
+  printf '\n# review-gate: shell scripts/hooks must stay LF (a CRLF shebang breaks them on macOS/Linux)\n.githooks/pre-commit text eol=lf\n.githooks/pre-push text eol=lf\n.review-gate/review-gate.sh text eol=lf\n' >> "$GA"
+  echo "  ✓ .gitattributes += LF pins for the gate scripts"
+fi
+
+# ── 4b. .gitignore the marker ────────────────────────────────────────────────
+GI="$TARGET/.gitignore"
+if [ -f "$GI" ] && grep -qE '^\.review-gate/\.gate/?$' "$GI" 2>/dev/null; then
+  echo "  ✓ .gitignore already ignores .review-gate/.gate/"
+else
+  printf '\n# review-gate attestation marker (machine-local)\n.review-gate/.gate/\n' >> "$GI"
+  echo "  ✓ .gitignore += .review-gate/.gate/"
+fi
+
+echo
+echo "✅ review-gate installed [$GATE_MODE mode] in $TARGET"
+echo "   Next:"
+echo "   1) Edit .review-gate/gate.config.json so verify (typecheck/lint/test) matches this project"
+echo "      (examples in $SCRIPT_DIR/gate/examples/). Keep gateMode = \"$GATE_MODE\"."
+echo "   2) Commit the review-gate files. (The FIRST commit is gated too — run the review + attest for it.)"
+echo "   3) Anyone who clones this repo runs once:  bash .review-gate/setup.sh"
+echo "      (or: git config core.hooksPath .githooks — git hooks are per-clone.)"
+echo "   • Optional un-bypassable enforcement: copy $SCRIPT_DIR/integrations/ci/github-actions.yml"
+echo "     to .github/workflows/review-gate.yml (re-runs verify on every PR)."
+echo "   4) If using Claude Code: restart it (or open /hooks) so the PreToolUse hook loads."

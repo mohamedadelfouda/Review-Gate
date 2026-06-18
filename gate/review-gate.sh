@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# ──────────────────────────────────────────────────────────────────────────
+# review-gate — a tool-agnostic review + verify gate for git repositories.
+#
+# Enforces a "review before it lands" protocol at EITHER `git commit` time
+# (default for local-only repos) OR `git push` time. Works with ANY actor that
+# runs git — a terminal, a human, Claude Code, OpenAI Codex, Cursor, Windsurf,
+# etc. — because the primary enforcement is a native git hook. AI tools also get
+# a per-tool integration file so they run the review proactively.
+#
+# Mode is set per-repo in .review-gate/gate.config.json -> "gateMode":
+#   "commit" → marker binds to the STAGED TREE; enforced by the pre-commit hook.
+#   "push"   → marker binds to the HEAD commit;  enforced by the pre-push hook.
+# The verify step (typecheck/lint/test) is also config-driven, so the same gate
+# works for TypeScript, Python, Go, Rust, etc.
+#
+# THREAT MODEL — an HONESTY gate, not an adversarial sandbox. It makes the
+# ACCIDENTAL skip impossible; a determined caller can still bypass it (e.g.
+# `git commit --no-verify`, or by editing the config). Assumes a COOPERATIVE
+# caller. For un-bypassable enforcement, pair it with a CI check.
+#
+# Sub-commands:
+#   precommit            git pre-commit hook entrypoint (commit mode). Aborts the
+#                        commit unless a fresh marker matches the staged tree.
+#   prepush              git pre-push hook entrypoint (push mode). Aborts the push
+#                        unless a fresh marker matches HEAD.
+#   check                Claude Code PreToolUse entrypoint (reads the tool JSON on
+#                        stdin; emits a deny decision). A nicer, earlier block for
+#                        Claude — additive on top of the git hook.
+#   attest --ran <steps> Run AFTER the review. Computes which review/guard steps
+#                        the diff REQUIRES and refuses the marker unless --ran
+#                        covers them; then runs verify and writes the marker.
+#
+# Prerequisite: bash, git, python3 on PATH (python3 = JSON + safe arg parsing).
+# ──────────────────────────────────────────────────────────────────────────
+
+set -uo pipefail
+
+MODE="${1:-check}"
+
+GATE_SUBDIR=".review-gate"
+
+# ---- helpers --------------------------------------------------------------
+
+deny() {  # Claude Code deny (modern + legacy forms)
+  python3 -c 'import json,sys
+msg=sys.argv[1]
+print(json.dumps({
+  "decision":"block","reason":msg,
+  "hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":msg}
+}))' "$1"
+  exit 0
+}
+
+repo_root() { git rev-parse --show-toplevel 2>/dev/null; }
+
+read_gate_mode() {  # $1 = config path; prints push|commit (default push)
+  python3 - "$1" <<'PY' 2>/dev/null || echo "push"
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+except Exception:
+    cfg = {}
+m = str(cfg.get("gateMode", "push")).strip().lower()
+print(m if m in ("push", "commit") else "push")
+PY
+}
+
+# Compute the block reason for the current binding. Echoes the (multi-line)
+# reason on stdout, or NOTHING if the action is allowed. Uses globals ROOT,
+# GATE_MODE. $1 = optional verdict (COMMIT_ALL triggers the unstaged-changes
+# guard used only by the Claude `check` path — git hooks pass "").
+gate_block_reason() {
+  local verdict="${1:-}"
+  local HEAD BRANCH MARKER ACTION RUN_HINT MARKER_INFO M_MODE M_HEAD M_TREE M_OK M_STATE CUR_TREE
+  HEAD="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "")"
+  BRANCH="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
+  MARKER="$ROOT/$GATE_SUBDIR/.gate/attest.json"
+  ACTION="$([ "$GATE_MODE" = commit ] && echo commit || echo push)"
+
+  if [ "$GATE_MODE" = commit ]; then
+    RUN_HINT="Run the gate first: stage everything (git add -A), review the staged diff with the review agents + guard-skills, fix, then:
+    bash $GATE_SUBDIR/review-gate.sh attest --ran review,clean-code,docs
+attest binds the marker to the STAGED tree and runs verify; then 'git commit'. Re-staging different content invalidates the marker. (Escape hatch: git commit --no-verify.)"
+  else
+    RUN_HINT="Run the gate first: review + fix, commit, then:
+    bash $GATE_SUBDIR/review-gate.sh attest --ran review,clean-code,docs
+attest binds the marker to HEAD and runs verify. Any new commit invalidates it. (Escape hatch: git push --no-verify.)"
+  fi
+
+  if [ ! -f "$MARKER" ]; then
+    printf '%s\n' "🔒 review-gate: the mandatory review gate has NOT run for this $ACTION ($BRANCH @ ${HEAD:0:8}).
+$RUN_HINT"
+    return
+  fi
+
+  MARKER_INFO="$(python3 -c '
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+    print("|".join([str(m.get("mode","push")), m.get("head","") or "", m.get("tree","") or "",
+                    "true" if m.get("ok") else "false", "readable"]))
+except Exception:
+    print("||||unreadable")
+' "$MARKER" 2>/dev/null || echo "||||unreadable")"
+  IFS="|" read -r M_MODE M_HEAD M_TREE M_OK M_STATE <<< "$MARKER_INFO"
+
+  if [ "$M_STATE" = unreadable ]; then
+    printf '%s\n' "🔒 review-gate: the marker is unreadable (corrupt/incomplete). Re-run the gate.
+$RUN_HINT"; return
+  fi
+  if [ "$M_MODE" != "$GATE_MODE" ]; then
+    printf '%s\n' "🔒 review-gate: the marker is for a different gate mode ($M_MODE) but this repo is '$GATE_MODE'. Re-run attest.
+$RUN_HINT"; return
+  fi
+
+  if [ "$GATE_MODE" = commit ]; then
+    if [ "$verdict" = COMMIT_ALL ] && ! git -C "$ROOT" diff --quiet 2>/dev/null; then
+      printf '%s\n' "🔒 review-gate: 'git commit -a/-am' would commit UNSTAGED changes that were not reviewed. Stage everything (git add -A), re-run the review + attest, then commit.
+$RUN_HINT"; return
+    fi
+    CUR_TREE="$(git -C "$ROOT" write-tree 2>/dev/null || echo "")"
+    if [ -z "$CUR_TREE" ]; then
+      printf '%s\n' "🔒 review-gate: could not compute the staged tree (unmerged paths?). Resolve + stage, then attest.
+$RUN_HINT"; return
+    fi
+    if [ "$M_TREE" != "$CUR_TREE" ]; then
+      printf '%s\n' "🔒 review-gate: the staged content changed after review (marker ${M_TREE:0:8} ≠ staged ${CUR_TREE:0:8}). Re-run the gate.
+$RUN_HINT"; return
+    fi
+  else
+    if [ "$M_HEAD" != "$HEAD" ]; then
+      printf '%s\n' "🔒 review-gate: the code changed after review (marker ${M_HEAD:0:8} ≠ HEAD ${HEAD:0:8}). Re-run the gate on the latest commit.
+$RUN_HINT"; return
+    fi
+  fi
+
+  if [ "$M_OK" != true ]; then
+    printf '%s\n' "🔒 review-gate: the last verify did NOT pass (typecheck/lint/test failed). Fix, then re-attest.
+$RUN_HINT"; return
+  fi
+  # allowed → echo nothing
+}
+
+# ===========================================================================
+# GIT HOOK ENTRYPOINTS — precommit / prepush
+# ===========================================================================
+if [ "$MODE" = "precommit" ] || [ "$MODE" = "prepush" ]; then
+  [ "$MODE" = "prepush" ] && cat >/dev/null 2>&1 || true   # drain hook stdin (refs)
+  ROOT="$(repo_root)"; [ -z "$ROOT" ] && exit 0
+  [ -f "$ROOT/$GATE_SUBDIR/gate.config.json" ] || exit 0     # repo not gated
+  GATE_MODE="$(read_gate_mode "$ROOT/$GATE_SUBDIR/gate.config.json")"
+
+  # Each hook only acts in its matching mode (so both can be installed at once).
+  if { [ "$MODE" = "precommit" ] && [ "$GATE_MODE" != "commit" ]; } ||
+     { [ "$MODE" = "prepush" ]  && [ "$GATE_MODE" != "push" ]; }; then
+    exit 0
+  fi
+
+  REASON="$(gate_block_reason "")"
+  if [ -n "$REASON" ]; then
+    printf '\n%s\n\n' "$REASON" >&2
+    exit 1   # aborts the commit/push
+  fi
+  exit 0
+fi
+
+# ===========================================================================
+# CLAUDE CODE PreToolUse ENTRYPOINT — check
+# ===========================================================================
+if [ "$MODE" = "check" ]; then
+  INPUT="$(cat 2>/dev/null || true)"
+  ROOT="$(repo_root)"; [ -z "$ROOT" ] && exit 0
+  [ -f "$ROOT/$GATE_SUBDIR/review-gate.sh" ] || exit 0       # repo not gated
+  GATE_MODE="$(read_gate_mode "$ROOT/$GATE_SUBDIR/gate.config.json")"
+
+  VERDICT="$(printf '%s' "$INPUT" | GATE_MODE="$GATE_MODE" python3 -c '
+import sys, json, re, shlex, os
+mode = os.environ.get("GATE_MODE", "push")
+try:
+    cmd = json.load(sys.stdin).get("tool_input", {}).get("command", "")
+except Exception:
+    cmd = ""
+segments = re.split(r"&&|\|\||[;&|\n]", cmd)
+VALUE_OPTS = {"-C", "--git-dir"}
+INSPECT = {"--dry-run", "--help", "-h"}
+ALL_FLAGS = {"-a", "--all", "--include", "-i", "--interactive", "--patch", "-p"}
+def classify(seg):
+    try: toks = shlex.split(seg)
+    except Exception: toks = seg.split()
+    out = []
+    for t in toks:
+        if t.startswith("#"): break
+        out.append(t)
+    toks = out
+    while toks and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]) or toks[0] in ("command", "builtin")):
+        toks.pop(0)
+    if not toks: return "SKIP"
+    head = toks[0].lstrip("\\").rsplit("/", 1)[-1]; rest = toks[1:]
+    if head == "git":
+        i = 0
+        while i < len(rest) and rest[i].startswith("-"):
+            opt = rest[i]; i += 1
+            if opt in VALUE_OPTS and i < len(rest): i += 1
+        if i >= len(rest): return "SKIP"
+        sub = rest[i]; opts = []
+        for t in rest[i+1:]:
+            if t == "--": break
+            opts.append(t)
+        if mode == "push" and sub == "push":
+            return "SKIP" if any(o in INSPECT for o in opts) else "PUSH"
+        if mode == "commit" and sub == "commit":
+            if any(o in INSPECT for o in opts): return "SKIP"
+            allflag = any(o in ALL_FLAGS for o in opts) or any(re.match(r"^-[A-Za-z]*a[A-Za-z]*$", o) for o in opts)
+            return "COMMIT_ALL" if allflag else "COMMIT"
+        return "SKIP"
+    if head == "gh" and mode == "push" and len(rest) >= 2 and rest[0] == "pr" and rest[1] == "create":
+        opts = []
+        for t in rest[2:]:
+            if t == "--": break
+            opts.append(t)
+        return "SKIP" if any(o in ("--help", "-h") for o in opts) else "PUSH"
+    return "SKIP"
+results = [classify(s) for s in segments]
+for v in ("COMMIT_ALL", "COMMIT", "PUSH"):
+    if v in results:
+        print(v); break
+else:
+    print("SKIP")
+' 2>/dev/null || echo "SKIP")"
+
+  [ "$VERDICT" = "SKIP" ] && exit 0
+  REASON="$(gate_block_reason "$VERDICT")"
+  [ -n "$REASON" ] && deny "$REASON"
+  exit 0
+fi
+
+# ===========================================================================
+# ATTEST
+# ===========================================================================
+if [ "$MODE" = "attest" ]; then
+  ROOT="$(repo_root)"
+  if [ -z "$ROOT" ]; then echo "❌ attest: not inside a git repo." >&2; exit 1; fi
+  cd "$ROOT" || exit 1
+
+  RAN=""
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --ran=*) RAN="${1#--ran=}"; shift ;;
+      --ran)   RAN="${2:-}"; shift 2 || shift ;;
+      *)       shift ;;
+    esac
+  done
+
+  HEAD="$(git rev-parse HEAD 2>/dev/null || echo "")"
+  BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
+  TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  GATE_DIR="$ROOT/$GATE_SUBDIR/.gate"
+  MARKER="$GATE_DIR/attest.json"
+  CONFIG_FILE="$ROOT/$GATE_SUBDIR/gate.config.json"
+  mkdir -p "$GATE_DIR"
+  GATE_MODE="$(read_gate_mode "$CONFIG_FILE")"
+
+  echo "▶ review-gate attest [$GATE_MODE mode] — $BRANCH @ ${HEAD:0:8}"
+
+  CFG_SH="$(python3 - "$CONFIG_FILE" <<'PY'
+import json, sys, shlex
+p = sys.argv[1]
+try: cfg = json.load(open(p))
+except Exception: cfg = {}
+verify = cfg.get("verify") or {}
+DEFAULTS = {
+    "typecheck": {"cmd": "node_modules/.bin/tsc --noEmit", "perFile": False, "enabled": True},
+    "lint":      {"cmd": "node_modules/.bin/eslint --max-warnings 0", "perFile": True, "enabled": True},
+    "test":      {"cmd": "node_modules/.bin/vitest related --run", "perFile": True, "enabled": True},
+}
+def step(name):
+    d = DEFAULTS[name]; s = verify.get(name)
+    if s is None: s = {} if verify else d
+    cmd = s.get("cmd", d["cmd"]); perfile = s.get("perFile", d["perFile"])
+    enabled = s.get("enabled", d["enabled"] if cmd else False)
+    return cmd, perfile, enabled
+def emit(n, v): print(f"{n}={shlex.quote(str(v))}")
+for nm, pfx in (("typecheck","TYPECHECK"), ("lint","LINT"), ("test","TEST")):
+    cmd, perfile, enabled = step(nm)
+    emit(f"{pfx}_CMD", cmd); emit(f"{pfx}_PERFILE", "1" if perfile else "0"); emit(f"{pfx}_ENABLED", "1" if enabled else "0")
+emit("LINTABLE_EXT", "|".join(cfg.get("lintableExtensions") or ["ts","tsx","js","jsx","mjs","cjs"]))
+emit("CODE_EXT", "|".join(cfg.get("codeExtensions") or ["ts","tsx","js","jsx","mjs","cjs","sh","bash","py","rb","go","rs","sql"]))
+PY
+)"
+  eval "$CFG_SH"
+  [ -f "$CONFIG_FILE" ] && echo "  • verify config: $GATE_SUBDIR/gate.config.json" || echo "  • verify config: none — Node defaults (tsc + eslint + vitest)"
+
+  TREE=""
+  if [ "$GATE_MODE" = "commit" ]; then
+    if git rev-parse --verify -q HEAD >/dev/null 2>&1; then CBASE="HEAD"; else CBASE="$(git hash-object -t tree /dev/null 2>/dev/null)"; fi
+    TREE="$(git write-tree 2>/dev/null || echo "")"
+    if [ -z "$TREE" ]; then echo "❌ attest: cannot compute the staged tree (unmerged paths?). Resolve + stage, then re-run." >&2; exit 1; fi
+    FULL_NAMES() { git diff --cached --name-only -z "$CBASE" 2>/dev/null; }
+    ACMR_NAMES() { git diff --cached --name-only -z --diff-filter=ACMR "$CBASE" 2>/dev/null; }
+    echo "  • binding: staged tree ${TREE:0:8}"
+  else
+    DEFAULT_REF="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"
+    if [ -n "$DEFAULT_REF" ]; then git fetch origin "${DEFAULT_REF#origin/}" --quiet 2>/dev/null || true; else git fetch origin --quiet 2>/dev/null || true; fi
+    BASE=""
+    for ref in "$DEFAULT_REF" origin/master origin/main master main; do
+      [ -z "$ref" ] && continue
+      BASE="$(git merge-base HEAD "$ref" 2>/dev/null || true)"; [ -n "$BASE" ] && break
+    done
+    if [ -z "$BASE" ]; then BASE="$(git hash-object -t tree /dev/null 2>/dev/null)"; echo "  ⚠ no base branch — diffing against the empty tree (ALL files treated as touched)."; fi
+    FULL_NAMES() { git diff --name-only -z "$BASE" HEAD 2>/dev/null; }
+    ACMR_NAMES() { git diff --name-only -z --diff-filter=ACMR "$BASE" HEAD 2>/dev/null; }
+    echo "  • binding: commit ${HEAD:0:8}"
+  fi
+
+  REQUIRED="$(FULL_NAMES | CODE_EXT="$CODE_EXT" python3 -c '
+import sys, re, os
+files = [f.decode("utf-8","surrogateescape") for f in sys.stdin.buffer.read().split(b"\x00") if f]
+code_ext = [e for e in os.environ.get("CODE_EXT","").split("|") if e]
+CODE = re.compile(r"\.(" + "|".join(re.escape(e) for e in code_ext) + r")$") if code_ext else None
+def is_test(p):
+    b = os.path.basename(p); path = "/" + p
+    return ("/e2e/" in path or "/tests/" in path or "/__tests__/" in path or "/spec/" in path
+            or ".test." in b or ".spec." in b or b.startswith("test_") or re.search(r"_test\.[A-Za-z0-9]+$", b) is not None)
+req = ["review"] if files else []
+nc = nt = nd = False
+for f in files:
+    if f.endswith(".md"): nd = True
+    if is_test(f): nt = True
+    elif CODE and CODE.search(f): nc = True
+if nc: req.append("clean-code")
+if nt: req.append("test")
+if nd: req.append("docs")
+print(",".join(req))
+' 2>/dev/null || echo "review")"
+
+  [ -z "$REQUIRED" ] && [ "$GATE_MODE" = "commit" ] && echo "  ⚠ nothing staged — did you forget 'git add'?"
+
+  MISSING="$(python3 -c '
+import sys
+req = [x for x in sys.argv[1].split(",") if x]
+ran = set(x.strip() for x in sys.argv[2].replace(" ", ",").split(",") if x.strip())
+print(",".join([r for r in req if r not in ran]))
+' "$REQUIRED" "$RAN" 2>/dev/null || echo "$REQUIRED")"
+
+  if [ -n "$MISSING" ]; then
+    echo "❌ attest: review/guard steps NOT acknowledged for this diff: $MISSING" >&2
+    echo "   Required: ${REQUIRED:-none}    Acknowledged (--ran): ${RAN:-<none>}" >&2
+    echo "   Run the review agents + the listed guard-skills, then re-run:" >&2
+    echo "     bash $GATE_SUBDIR/review-gate.sh attest --ran ${REQUIRED}" >&2
+    exit 1
+  fi
+  echo "  • gate steps acknowledged: ${RAN:-<none>} (required: ${REQUIRED:-none})"
+
+  TOUCHED_Z="$(mktemp -t gate-touched.XXXXXX)"
+  trap 'rm -f "$TOUCHED_Z"' EXIT
+  ACMR_NAMES | LINTABLE_EXT="$LINTABLE_EXT" python3 -c '
+import sys, re, os
+data = sys.stdin.buffer.read().split(b"\x00")
+exts = [e for e in os.environ.get("LINTABLE_EXT","").split("|") if e]
+pat = re.compile((r"\.(" + "|".join(re.escape(e) for e in exts) + r")$").encode()) if exts else None
+out = [f for f in data if f and (pat is None or pat.search(f))]
+sys.stdout.buffer.write(b"\x00".join(out))
+' > "$TOUCHED_Z"
+  NLINT="$(python3 -c 'import sys; d=open(sys.argv[1],"rb").read().split(b"\x00"); print(len([x for x in d if x]))' "$TOUCHED_Z" 2>/dev/null || echo 0)"
+
+  WORKTREE_HINT=""
+  if [ ! -d "$ROOT/node_modules" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [ "$(git rev-parse --git-dir 2>/dev/null)" != "$(git rev-parse --git-common-dir 2>/dev/null)" ]; then
+      WORKTREE_HINT=" (git worktree without its own node_modules — run from the main checkout or symlink deps)"
+    fi
+  fi
+
+  TYPECHECK_RES="skip"; LINT_RES="skip"; TEST_RES="skip"; FAILED=0
+
+  if [ "$TYPECHECK_ENABLED" != "1" ] || [ -z "$TYPECHECK_CMD" ]; then
+    echo "  • typecheck: disabled — SKIP"
+  else
+    echo "  • typecheck: $TYPECHECK_CMD ..."
+    if bash -c "$TYPECHECK_CMD" >/tmp/gate-typecheck.log 2>&1; then TYPECHECK_RES="pass"; echo "    ✓ typecheck clean"
+    else TYPECHECK_RES="fail"; FAILED=1; echo "    ✗ typecheck failed${WORKTREE_HINT}:"; tail -15 /tmp/gate-typecheck.log | sed 's/^/      /'; fi
+  fi
+
+  if [ "$LINT_ENABLED" != "1" ] || [ -z "$LINT_CMD" ]; then
+    echo "  • lint: disabled — SKIP"
+  elif [ "$LINT_PERFILE" = "1" ] && [ "$NLINT" -eq 0 ]; then
+    echo "  • lint: no touched lint-able files — SKIP"
+  else
+    echo "  • lint: $LINT_CMD ($([ "$LINT_PERFILE" = "1" ] && echo "$NLINT file(s)" || echo "whole project")) ..."
+    OK_RUN=0
+    if [ "$LINT_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec $c "$@"' _ "$LINT_CMD" < "$TOUCHED_Z" >/tmp/gate-lint.log 2>&1 && OK_RUN=1
+    else bash -c "$LINT_CMD" >/tmp/gate-lint.log 2>&1 && OK_RUN=1; fi
+    if [ "$OK_RUN" -eq 1 ]; then LINT_RES="pass"; echo "    ✓ lint clean"
+    else LINT_RES="fail"; FAILED=1; echo "    ✗ lint findings${WORKTREE_HINT}:"; tail -20 /tmp/gate-lint.log | sed 's/^/      /'; fi
+  fi
+
+  if [ "$TEST_ENABLED" != "1" ] || [ -z "$TEST_CMD" ]; then
+    echo "  • test: disabled — SKIP"
+  elif [ "$TEST_PERFILE" = "1" ] && [ "$NLINT" -eq 0 ]; then
+    echo "  • test: no touched testable files — SKIP"
+  else
+    echo "  • test: $TEST_CMD ($([ "$TEST_PERFILE" = "1" ] && echo "$NLINT file(s)" || echo "whole suite")) ..."
+    OK_RUN=0
+    if [ "$TEST_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec $c "$@"' _ "$TEST_CMD" < "$TOUCHED_Z" >/tmp/gate-test.log 2>&1 && OK_RUN=1
+    else bash -c "$TEST_CMD" >/tmp/gate-test.log 2>&1 && OK_RUN=1; fi
+    if [ "$OK_RUN" -eq 1 ]; then TEST_RES="pass"; echo "    ✓ test passed"
+    else TEST_RES="fail"; FAILED=1; echo "    ✗ test failures${WORKTREE_HINT}:"; tail -25 /tmp/gate-test.log | sed 's/^/      /'; fi
+  fi
+
+  OK="true"; [ "$FAILED" -eq 1 ] && OK="false"
+
+  python3 -c "import json,sys
+m={'mode':sys.argv[1],'head':sys.argv[2],'tree':sys.argv[3],'branch':sys.argv[4],'ts':sys.argv[5],
+   'verify':{'typecheck':sys.argv[6],'lint':sys.argv[7],'test':sys.argv[8]},
+   'gate':{'required':sys.argv[11],'ran':sys.argv[12]},'ok':sys.argv[9]=='true'}
+open(sys.argv[10],'w').write(json.dumps(m,indent=2))" \
+    "$GATE_MODE" "$HEAD" "$TREE" "$BRANCH" "$TS" "$TYPECHECK_RES" "$LINT_RES" "$TEST_RES" "$OK" "$MARKER" "$REQUIRED" "$RAN"
+
+  if [ "$OK" = "true" ]; then
+    if [ "$GATE_MODE" = "commit" ]; then
+      echo "✅ attested for staged tree ${TREE:0:8}: typecheck=$TYPECHECK_RES lint=$LINT_RES test=$TEST_RES — commit unlocked (don't re-stage before committing)."
+    else
+      echo "✅ attested for ${HEAD:0:8}: typecheck=$TYPECHECK_RES lint=$LINT_RES test=$TEST_RES — push unlocked."
+    fi
+    exit 0
+  else
+    echo "❌ verify failed (typecheck=$TYPECHECK_RES lint=$LINT_RES test=$TEST_RES). Marker written NOT-ok; $GATE_MODE stays BLOCKED. Fix and re-run attest." >&2
+    exit 1
+  fi
+fi
+
+echo "usage: review-gate.sh precommit | prepush | check | attest --ran <review,clean-code,test,docs>" >&2
+exit 2

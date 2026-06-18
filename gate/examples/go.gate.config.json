@@ -1,0 +1,22 @@
+{
+  "$comment": "Example for a Go project (go vet + golangci-lint + go test). Drop as .claude/gate.config.json.",
+  "verify": {
+    "typecheck": {
+      "cmd": "go vet ./...",
+      "perFile": false,
+      "enabled": true
+    },
+    "lint": {
+      "cmd": "golangci-lint run",
+      "perFile": false,
+      "enabled": true
+    },
+    "test": {
+      "cmd": "go test ./...",
+      "perFile": false,
+      "enabled": true
+    }
+  },
+  "lintableExtensions": ["go"],
+  "codeExtensions": ["go"]
+}

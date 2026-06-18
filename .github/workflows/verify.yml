@@ -1,0 +1,34 @@
+# review-gate self-check — dogfoods both the gate's verify and its behavior.
+name: verify
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      # Run this repo's own gate.config.json verify (shell syntax check) — the
+      # same config-driven verify a consumer's CI would run via the template at
+      # integrations/ci/github-actions.yml.
+      - name: gate.config verify
+        run: |
+          python3 - <<'PY'
+          import json, subprocess, sys
+          cfg = json.load(open(".review-gate/gate.config.json"))
+          v = cfg.get("verify", {}) or {}
+          failed = False
+          for name in ("typecheck", "lint", "test"):
+              s = v.get(name) or {}
+              if not s.get("enabled", True): print(f"{name}: skip"); continue
+              cmd = s.get("cmd")
+              if not cmd: continue
+              print(f"::group::{name}: {cmd}")
+              rc = subprocess.run(cmd, shell=True).returncode
+              print("::endgroup::")
+              if rc != 0: print(f"::error::{name} failed"); failed = True
+          sys.exit(1 if failed else 0)
+          PY
+
+      - name: smoke test (block → attest → unblock)
+        run: bash tests/smoke.sh

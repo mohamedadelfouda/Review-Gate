@@ -1,0 +1,20 @@
+---
+description: Mandatory review gate before git commit/push
+alwaysApply: true
+---
+
+# Review Gate (mandatory)
+
+Before any `git commit` (or `git push`), follow the protocol in
+`.review-gate/GATE.md`:
+
+1. Review the diff using the agents in `.review-gate/agents/` and the guard-skills
+   in `.review-gate/skills/` (apply them as checklists over the changed files).
+2. Fix every real finding.
+3. Run: `bash .review-gate/review-gate.sh attest --ran review,clean-code`
+   (add `test` / `docs` if those files changed).
+4. Then commit/push.
+
+A git hook BLOCKS the action until `attest` passes for the exact change. This is
+an honesty gate — never bypass it with `--no-verify`. Verify commands live in
+`.review-gate/gate.config.json`.

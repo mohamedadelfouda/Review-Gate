@@ -1,0 +1,53 @@
+# review-gate — CI companion (un-bypassable enforcement).
+#
+# The local git hook is an HONESTY gate: it can be bypassed with `--no-verify`.
+# This workflow re-runs the SAME verify commands from .review-gate/gate.config.json
+# in CI, where they can't be skipped — so a bypassed local commit still fails the
+# pull request. Copy this file to .github/workflows/review-gate.yml in your repo
+# and adjust the runtime setup (Node/Python/Go/...) to your stack.
+name: review-gate verify
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      # --- set up YOUR toolchain here (uncomment what applies) ---
+      # - uses: actions/setup-node@v4
+      #   with: { node-version: 20 }
+      # - run: npm ci
+      # - uses: actions/setup-python@v5
+      #   with: { python-version: '3.12' }
+      # - run: pip install -r requirements.txt
+      # - uses: actions/setup-go@v5
+      #   with: { go-version: '1.22' }
+
+      - name: Run review-gate verify (typecheck + lint + test)
+        run: |
+          python3 - <<'PY'
+          import json, subprocess, sys
+          try:
+              cfg = json.load(open(".review-gate/gate.config.json"))
+          except Exception as e:
+              print(f"::error::cannot read .review-gate/gate.config.json: {e}"); sys.exit(1)
+          v = cfg.get("verify", {}) or {}
+          failed = False
+          for name in ("typecheck", "lint", "test"):
+              s = v.get(name) or {}
+              if not s.get("enabled", True):
+                  print(f"{name}: disabled — skip"); continue
+              cmd = s.get("cmd")
+              if not cmd:
+                  print(f"{name}: no cmd — skip"); continue
+              print(f"::group::{name}: {cmd}")
+              rc = subprocess.run(cmd, shell=True).returncode
+              print("::endgroup::")
+              if rc != 0:
+                  print(f"::error::{name} failed (exit {rc})"); failed = True
+          sys.exit(1 if failed else 0)
+          PY
