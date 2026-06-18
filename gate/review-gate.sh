@@ -568,6 +568,14 @@ if [ "$MODE" = "ci-verify" ]; then
     RT="$(git rev-parse "$ref" 2>/dev/null || true)"; [ "$RT" = "$HEAD_OID" ] && continue
     CI_BASE="$(git merge-base HEAD "$ref" 2>/dev/null || true)"; [ -n "$CI_BASE" ] && break
   done
+  # No base branch (first commit / main is the only ref): fall back to HEAD^ if it
+  # exists, else the empty tree — so perFile commands ALWAYS get a file list and
+  # never run with zero args (which would break a command that needs a filename).
+  CI_NOBASE=0
+  if [ -z "$CI_BASE" ]; then
+    CI_BASE="$(git rev-parse --verify -q HEAD^ 2>/dev/null || git hash-object -t tree /dev/null 2>/dev/null)"
+    CI_NOBASE=1
+  fi
   CI_TOUCHED="$(mktemp -t gate-ci.XXXXXX)"; trap 'rm -f "$CI_TOUCHED"' EXIT
   if [ -n "$CI_BASE" ]; then
     git diff --name-only -z --diff-filter=ACMR "$CI_BASE" HEAD 2>/dev/null | LINTABLE_EXT="$LINTABLE_EXT" python_cmd -c '
@@ -581,7 +589,7 @@ sys.stdout.buffer.write(b"\x00".join(out))
   fi
   CI_NLINT="$(python_cmd -c 'import sys; d=open(sys.argv[1],"rb").read().split(b"\x00"); print(len([x for x in d if x]))' "$CI_TOUCHED" 2>/dev/null || echo 0)"
 
-  echo "▶ review-gate ci-verify ($([ -n "$CI_BASE" ] && echo "changed files vs ${CI_BASE:0:8}" || echo "whole project"))"
+  echo "▶ review-gate ci-verify ($([ "$CI_NOBASE" = 1 ] && echo "no base branch → HEAD^/all files" || echo "changed files vs ${CI_BASE:0:8}"))"
   CI_FAIL=0
   ci_run() {  # label cmd perFile enabled — honors perFile exactly like local attest
     local label="$1" cmd="$2" perfile="$3" enabled="$4"

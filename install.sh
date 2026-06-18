@@ -182,17 +182,18 @@ echo "  ✓ .review-gate/GATE.md ($GATE_MODE protocol)"
 
 # ── 2. git hooks (universal enforcement) ────────────────────────────────────
 mkdir -p "$TARGET/.githooks"
-install_hook() {  # src dst — never clobber a foreign hook: back it up + warn first
-  local src="$1" dst="$2"
-  if [ -f "$dst" ] && ! grep -q "review-gate" "$dst" 2>/dev/null; then
-    cp "$dst" "$dst.pre-review-gate.bak"
-    echo "  ⚠ existing $(basename "$dst") wasn't review-gate's — backed it up to $(basename "$dst").pre-review-gate.bak (it will no longer run; re-add its logic if you need it)"
+install_hook() {  # src dst entrypoint — never clobber a foreign hook (unless --force)
+  local src="$1" dst="$2" entry="$3"
+  if [ -f "$dst" ] && ! grep -q "review-gate" "$dst" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+    echo "  ⚠ existing $(basename "$dst") (not review-gate's) — NOT overwriting it."
+    echo "    To enforce review-gate, add this line to it (or re-run with --force):"
+    echo "      ROOT=\"\$(git rev-parse --show-toplevel)\"; exec bash \"\$ROOT/.review-gate/review-gate.sh\" $entry"
+    return
   fi
-  cp "$src" "$dst"; chmod +x "$dst"
+  cp "$src" "$dst"; chmod +x "$dst"; echo "  ✓ .githooks/$(basename "$dst")"
 }
-install_hook "$SCRIPT_DIR/githooks/pre-commit" "$TARGET/.githooks/pre-commit"
-install_hook "$SCRIPT_DIR/githooks/pre-push"   "$TARGET/.githooks/pre-push"
-echo "  ✓ .githooks/pre-commit + pre-push"
+install_hook "$SCRIPT_DIR/githooks/pre-commit" "$TARGET/.githooks/pre-commit" precommit
+install_hook "$SCRIPT_DIR/githooks/pre-push"   "$TARGET/.githooks/pre-push"   prepush
 
 CUR_HP="$(git -C "$TARGET" config --local --get core.hooksPath 2>/dev/null || true)"
 if [ -z "$CUR_HP" ] || [ "$CUR_HP" = ".githooks" ]; then

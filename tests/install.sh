@@ -21,4 +21,16 @@ if bash "$KIT/install.sh" "$TMP/repo" --tools codex >/dev/null 2>&1; then
 fi
 grep -qF '{broken json' "$TMP/repo/.review-gate/gate.config.json" || fail "invalid config was not preserved"
 
+# a foreign .githooks/pre-commit must NOT be clobbered without --force
+git init -q "$TMP/hook-repo"
+git -C "$TMP/hook-repo" config user.email a@b.c; git -C "$TMP/hook-repo" config user.name tester
+mkdir -p "$TMP/hook-repo/.githooks"
+printf '#!/bin/sh\necho custom-hook\n' > "$TMP/hook-repo/.githooks/pre-commit"
+chmod +x "$TMP/hook-repo/.githooks/pre-commit"
+git -C "$TMP/hook-repo" config core.hooksPath .githooks
+bash "$KIT/install.sh" "$TMP/hook-repo" --mode commit --tools codex --yes >/dev/null
+grep -q "custom-hook" "$TMP/hook-repo/.githooks/pre-commit" || fail "installer overwrote a foreign .githooks/pre-commit without --force"
+bash "$KIT/install.sh" "$TMP/hook-repo" --mode commit --tools codex --yes --force >/dev/null
+grep -q "review-gate" "$TMP/hook-repo/.githooks/pre-commit" || fail "--force did not replace the foreign pre-commit hook"
+
 echo "PASS: review-gate installer test"

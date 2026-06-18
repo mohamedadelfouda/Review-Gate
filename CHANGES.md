@@ -38,17 +38,20 @@ repo's own gate runs on every commit.
 - **The installer preserves an invalid existing `gate.config.json`** and aborts
   (instead of clobbering it) unless `--force` is given. (`tests/install.sh`)
 - **`install.sh --force` replaces directories** instead of nesting a copy inside.
-- **Foreign git hooks are backed up, not clobbered.** If `.githooks/pre-commit`/
-  `pre-push` already exists and isn't review-gate's, the installer backs it up to
-  `*.pre-review-gate.bak` and warns (no data loss). (Hook managers like Husky use
-  their own dir + `core.hooksPath`, which the installer already leaves untouched.)
+- **Foreign git hooks are never clobbered.** If `.githooks/pre-commit`/`pre-push`
+  already exists and isn't review-gate's, the installer LEAVES it in place and
+  prints how to wire review-gate into it (or `--force` to replace it);
+  `tests/install.sh` locks both paths. (Hook managers like Husky use their own dir
+  + `core.hooksPath`, which the installer already leaves untouched.)
 - **Re-installing with a different `--mode`** updates the Claude `PreToolUse`
   condition instead of leaving a stale one.
 - **Verify logs use `mktemp`** instead of fixed `/tmp` paths.
 - **The CI companion shares the gate's verify** via a `ci-verify` subcommand that
   **honors `perFile`** (perFile commands run on the PR's changed files, others
-  whole-project) so CI matches local attest instead of diverging; `tests/ci.sh`
-  locks it. The repo's own workflow runs the **source** `gate/review-gate.sh
+  whole-project) so CI matches local attest instead of diverging — and when no
+  base branch resolves (first commit / single ref) it falls back to `HEAD^` / the
+  empty tree so perFile commands still receive files (never run blank);
+  `tests/ci.sh` locks both. The repo's own workflow runs the **source** `gate/review-gate.sh
   ci-verify` (it dogfoods from source — there is no installed `.review-gate/`
   copy in the tool's own repo). CI enforces the VERIFY step, not that a human/
   agent actually reviewed.
