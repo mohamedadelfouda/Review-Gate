@@ -182,12 +182,17 @@ echo "  ✓ .review-gate/GATE.md ($GATE_MODE protocol)"
 
 # ── 2. git hooks (universal enforcement) ────────────────────────────────────
 mkdir -p "$TARGET/.githooks"
+HOOK_SKIPPED=0
 install_hook() {  # src dst entrypoint — never clobber a foreign hook (unless --force)
   local src="$1" dst="$2" entry="$3"
-  if [ -f "$dst" ] && ! grep -q "review-gate" "$dst" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+  # Recognize OUR hook by a PRECISE sentinel, not just the word "review-gate" — a
+  # user hook that merely CALLS review-gate must NOT be treated as ours + clobbered.
+  if [ -f "$dst" ] && ! grep -q "review-gate:managed-hook" "$dst" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+    HOOK_SKIPPED=1
     echo "  ⚠ existing $(basename "$dst") (not review-gate's) — NOT overwriting it."
-    echo "    To enforce review-gate, add this line to it (or re-run with --force):"
-    echo "      ROOT=\"\$(git rev-parse --show-toplevel)\"; exec bash \"\$ROOT/.review-gate/review-gate.sh\" $entry"
+    echo "    To enforce review-gate, add these lines to it (or re-run with --force):"
+    echo "      ROOT=\"\$(git rev-parse --show-toplevel)\""
+    echo "      bash \"\$ROOT/.review-gate/review-gate.sh\" $entry || exit \$?"
     return
   fi
   cp "$src" "$dst"; chmod +x "$dst"; echo "  ✓ .githooks/$(basename "$dst")"
@@ -263,7 +268,7 @@ GA="$TARGET/.gitattributes"
 if [ -f "$GA" ] && grep -qF '.review-gate/review-gate.sh text eol=lf' "$GA" 2>/dev/null; then
   echo "  ✓ .gitattributes already pins LF for the gate scripts"
 else
-  printf '\n# review-gate: shell scripts/hooks must stay LF (a CRLF shebang breaks them on macOS/Linux)\n.githooks/pre-commit text eol=lf\n.githooks/pre-push text eol=lf\n.review-gate/review-gate.sh text eol=lf\n' >> "$GA"
+  printf '\n# review-gate: shell scripts/hooks must stay LF (a CRLF shebang breaks them on macOS/Linux)\n.githooks/pre-commit text eol=lf\n.githooks/pre-push text eol=lf\n.review-gate/review-gate.sh text eol=lf\n.review-gate/setup.sh text eol=lf\n' >> "$GA"
   echo "  ✓ .gitattributes += LF pins for the gate scripts"
 fi
 
@@ -277,6 +282,13 @@ else
 fi
 
 echo
+if [ "$HOOK_SKIPPED" -eq 1 ]; then
+  echo "⚠⚠ review-gate's FILES are installed, but ENFORCEMENT is NOT active for the hook(s)"
+  echo "    skipped above — a foreign hook is in place. Wire review-gate into it manually"
+  echo "    (see the lines printed above) or re-run with --force. Until then, commits/pushes"
+  echo "    are NOT gated."
+  echo
+fi
 echo "✅ review-gate installed [$GATE_MODE mode] in $TARGET"
 echo "   Next:"
 echo "   1) Edit .review-gate/gate.config.json so verify (typecheck/lint/test) matches this project"

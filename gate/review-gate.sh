@@ -562,19 +562,27 @@ if [ "$MODE" = "ci-verify" ]; then
   # whole-project when no base resolves (first commit / shallow checkout).
   DEFAULT_REF="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"
   HEAD_OID="$(git rev-parse HEAD 2>/dev/null || echo "")"
+  # Prefer an explicit base from the CI environment — the workflow sets it from the
+  # GitHub event (github.event.before for push, pull_request.base.sha for a PR), so
+  # a multi-commit push diffs from BEFORE the push, not just the last commit.
   CI_BASE=""
-  for ref in "$DEFAULT_REF" origin/main origin/master main master; do
-    [ -z "$ref" ] && continue
-    RT="$(git rev-parse "$ref" 2>/dev/null || true)"; [ "$RT" = "$HEAD_OID" ] && continue
-    CI_BASE="$(git merge-base HEAD "$ref" 2>/dev/null || true)"; [ -n "$CI_BASE" ] && break
-  done
-  # No base branch (first commit / main is the only ref): fall back to HEAD^ if it
-  # exists, else the empty tree — so perFile commands ALWAYS get a file list and
-  # never run with zero args (which would break a command that needs a filename).
+  if [ -n "${REVIEW_GATE_CI_BASE:-}" ]; then
+    CI_BASE="$(git rev-parse --verify -q "${REVIEW_GATE_CI_BASE}^{commit}" 2>/dev/null || true)"
+  fi
+  if [ -z "$CI_BASE" ]; then
+    for ref in "$DEFAULT_REF" origin/main origin/master main master; do
+      [ -z "$ref" ] && continue
+      RT="$(git rev-parse "$ref" 2>/dev/null || true)"; [ "$RT" = "$HEAD_OID" ] && continue
+      CI_BASE="$(git merge-base HEAD "$ref" 2>/dev/null || true)"; [ -n "$CI_BASE" ] && break
+    done
+  fi
+  # Still no base → diff against the EMPTY TREE (ALL tracked files), NOT HEAD^ (which
+  # only covers the last commit and would MISS earlier commits in a multi-commit
+  # push). Empty tree is the safe over-approximation: everything gets checked, and
+  # perFile commands still receive a (full) file list.
   CI_NOBASE=0
   if [ -z "$CI_BASE" ]; then
-    CI_BASE="$(git rev-parse --verify -q HEAD^ 2>/dev/null || git hash-object -t tree /dev/null 2>/dev/null)"
-    CI_NOBASE=1
+    CI_BASE="$(git hash-object -t tree /dev/null 2>/dev/null)"; CI_NOBASE=1
   fi
   CI_TOUCHED="$(mktemp -t gate-ci.XXXXXX)"; trap 'rm -f "$CI_TOUCHED"' EXIT
   if [ -n "$CI_BASE" ]; then
@@ -589,7 +597,7 @@ sys.stdout.buffer.write(b"\x00".join(out))
   fi
   CI_NLINT="$(python_cmd -c 'import sys; d=open(sys.argv[1],"rb").read().split(b"\x00"); print(len([x for x in d if x]))' "$CI_TOUCHED" 2>/dev/null || echo 0)"
 
-  echo "▶ review-gate ci-verify ($([ "$CI_NOBASE" = 1 ] && echo "no base branch → HEAD^/all files" || echo "changed files vs ${CI_BASE:0:8}"))"
+  echo "▶ review-gate ci-verify ($([ "$CI_NOBASE" = 1 ] && echo "no base → all files (empty tree)" || echo "changed files vs ${CI_BASE:0:8}"))"
   CI_FAIL=0
   ci_run() {  # label cmd perFile enabled — honors perFile exactly like local attest
     local label="$1" cmd="$2" perfile="$3" enabled="$4"

@@ -32,13 +32,17 @@ cat > .review-gate/gate.config.json <<'EOF'
 EOF
 if bash .review-gate/review-gate.sh ci-verify >/dev/null 2>&1; then fail "ci-verify passed on a FAILING config"; fi
 
-# perFile must receive the changed files even with NO base branch (regression for
-# the "ci-verify runs a perFile command with zero args" bug). The lint command
-# asserts it got at least one filename.
-echo more >> a.txt; git add a.txt; git commit -qm change
+# perFile + multi-commit: with NO base branch, ci-verify must check ALL tracked
+# files (empty-tree fallback), not just the tip commit — else a BAD file added in an
+# EARLIER commit slips through. (--no-verify is test scaffolding to build history
+# without going through the gate.) The lint fails if any checked file contains BAD.
+printf 'BAD\n' > flag.txt;  git add flag.txt;  git commit -qm flag  --no-verify
+printf 'ok\n'  > later.txt; git add later.txt; git commit -qm later --no-verify
 cat > .review-gate/gate.config.json <<'EOF'
-{"gateMode":"commit","verify":{"typecheck":{"enabled":false},"lint":{"cmd":"python3 -c \"import sys; assert len(sys.argv)>1, 'no files passed'\"","perFile":true,"enabled":true},"test":{"enabled":false}},"lintableExtensions":["txt"],"codeExtensions":["txt"]}
+{"gateMode":"commit","verify":{"typecheck":{"enabled":false},"lint":{"cmd":"! grep -q BAD","perFile":true,"enabled":true},"test":{"enabled":false}},"lintableExtensions":["txt"],"codeExtensions":["txt"]}
 EOF
-bash .review-gate/review-gate.sh ci-verify >/dev/null 2>&1 || fail "ci-verify ran a perFile command with no files (no-base fallback broken)"
+if bash .review-gate/review-gate.sh ci-verify >/dev/null 2>&1; then
+  fail "ci-verify missed an earlier commit's file (no base must check ALL files, not just the tip)"
+fi
 
 echo "PASS: review-gate ci-verify test"

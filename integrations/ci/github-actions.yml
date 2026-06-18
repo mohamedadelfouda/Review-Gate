@@ -33,4 +33,8 @@ jobs:
         # HONORS perFile — perFile commands run on the PR's changed files, others
         # whole-project — so CI matches local attest instead of diverging.
         # It enforces the VERIFY step; it does not prove a human/agent reviewed.
+        env:
+          # Diff base for perFile commands: the PR base on pull_request, the
+          # pre-push SHA on push (covers a whole multi-commit push, not just the tip).
+          REVIEW_GATE_CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: bash .review-gate/review-gate.sh ci-verify
