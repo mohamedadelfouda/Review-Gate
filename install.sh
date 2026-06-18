@@ -182,9 +182,16 @@ echo "  ✓ .review-gate/GATE.md ($GATE_MODE protocol)"
 
 # ── 2. git hooks (universal enforcement) ────────────────────────────────────
 mkdir -p "$TARGET/.githooks"
-cp "$SCRIPT_DIR/githooks/pre-commit" "$TARGET/.githooks/pre-commit"
-cp "$SCRIPT_DIR/githooks/pre-push"   "$TARGET/.githooks/pre-push"
-chmod +x "$TARGET/.githooks/pre-commit" "$TARGET/.githooks/pre-push"
+install_hook() {  # src dst — never clobber a foreign hook: back it up + warn first
+  local src="$1" dst="$2"
+  if [ -f "$dst" ] && ! grep -q "review-gate" "$dst" 2>/dev/null; then
+    cp "$dst" "$dst.pre-review-gate.bak"
+    echo "  ⚠ existing $(basename "$dst") wasn't review-gate's — backed it up to $(basename "$dst").pre-review-gate.bak (it will no longer run; re-add its logic if you need it)"
+  fi
+  cp "$src" "$dst"; chmod +x "$dst"
+}
+install_hook "$SCRIPT_DIR/githooks/pre-commit" "$TARGET/.githooks/pre-commit"
+install_hook "$SCRIPT_DIR/githooks/pre-push"   "$TARGET/.githooks/pre-push"
 echo "  ✓ .githooks/pre-commit + pre-push"
 
 CUR_HP="$(git -C "$TARGET" config --local --get core.hooksPath 2>/dev/null || true)"

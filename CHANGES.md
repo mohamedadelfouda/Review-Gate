@@ -38,6 +38,10 @@ repo's own gate runs on every commit.
 - **The installer preserves an invalid existing `gate.config.json`** and aborts
   (instead of clobbering it) unless `--force` is given. (`tests/install.sh`)
 - **`install.sh --force` replaces directories** instead of nesting a copy inside.
+- **Foreign git hooks are backed up, not clobbered.** If `.githooks/pre-commit`/
+  `pre-push` already exists and isn't review-gate's, the installer backs it up to
+  `*.pre-review-gate.bak` and warns (no data loss). (Hook managers like Husky use
+  their own dir + `core.hooksPath`, which the installer already leaves untouched.)
 - **Re-installing with a different `--mode`** updates the Claude `PreToolUse`
   condition instead of leaving a stale one.
 - **Verify logs use `mktemp`** instead of fixed `/tmp` paths.
