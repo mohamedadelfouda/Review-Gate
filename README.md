@@ -318,6 +318,15 @@ safer default.
   **Ahmed Nagdy** ([@amElnagdy](https://github.com/amElnagdy/guard-skills)), MIT
   licensed, vendored with their license preserved. See `NOTICE`.
 
+### Acknowledgments
+
+Special thanks to **Ahmed Nagdy** ([@amElnagdy](https://github.com/amElnagdy)). The
+quality layer of this gate is powered by his open-source
+[guard-skills](https://github.com/amElnagdy/guard-skills) — `clean-code-guard`,
+`test-guard`, and `docs-guard` — vendored here with their MIT license preserved. They
+are what turns "a review ran" into "a review that catches real problems." Go star his
+work. 🙏
+
 ---
 
 ## العربية
@@ -525,3 +534,11 @@ default أأمن.
 - الـ guard skills (`clean-code-guard`, `test-guard`, `docs-guard`) من عمل **Ahmed Nagdy**
   ([@amElnagdy](https://github.com/amElnagdy/guard-skills))، ترخيص MIT، مضافة مع الحفاظ على
   الترخيص. راجع `NOTICE`.
+
+### شكر وتقدير
+
+شكر خاص لـ **Ahmed Nagdy** ([@amElnagdy](https://github.com/amElnagdy)). طبقة الجودة في
+البوابة دي شغّالة بالـ [guard-skills](https://github.com/amElnagdy/guard-skills) مفتوحة
+المصدر بتاعته — `clean-code-guard` و`test-guard` و`docs-guard` — مضمومة هنا مع الحفاظ على
+ترخيص MIT بتاعها. هي اللي بتحوّل "المراجعة اتعملت" لـ "مراجعة بتمسك مشاكل حقيقية". تستاهل
+نجمة ⭐ على شغله. 🙏
