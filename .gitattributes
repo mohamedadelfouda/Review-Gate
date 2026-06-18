@@ -1,5 +1,5 @@
 # Shell scripts and git hooks MUST stay LF on every OS, or a CRLF shebang
 # (\r) breaks them on macOS/Linux (and Git Bash). Do not change this.
 *.sh            text eol=lf
-githooks/pre-commit text eol=lf
-githooks/pre-push   text eol=lf
+githooks/*      text eol=lf
+.githooks/*     text eol=lf
