@@ -28,26 +28,7 @@ jobs:
       #   with: { go-version: '1.22' }
 
       - name: Run review-gate verify (typecheck + lint + test)
-        run: |
-          python3 - <<'PY'
-          import json, subprocess, sys
-          try:
-              cfg = json.load(open(".review-gate/gate.config.json"))
-          except Exception as e:
-              print(f"::error::cannot read .review-gate/gate.config.json: {e}"); sys.exit(1)
-          v = cfg.get("verify", {}) or {}
-          failed = False
-          for name in ("typecheck", "lint", "test"):
-              s = v.get(name) or {}
-              if not s.get("enabled", True):
-                  print(f"{name}: disabled — skip"); continue
-              cmd = s.get("cmd")
-              if not cmd:
-                  print(f"{name}: no cmd — skip"); continue
-              print(f"::group::{name}: {cmd}")
-              rc = subprocess.run(cmd, shell=True).returncode
-              print("::endgroup::")
-              if rc != 0:
-                  print(f"::error::{name} failed (exit {rc})"); failed = True
-          sys.exit(1 if failed else 0)
-          PY
+        # ci-verify re-runs the EXACT same config-driven verify the local gate
+        # uses (same Node defaults when the verify block is omitted), whole-project,
+        # using the shared logic in review-gate.sh — no divergent parsing here.
+        run: bash .review-gate/review-gate.sh ci-verify

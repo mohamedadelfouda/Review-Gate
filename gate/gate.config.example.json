@@ -1,5 +1,5 @@
 {
-  "$comment": "Review Gate config. Copy to <target-repo>/.claude/gate.config.json and adjust to your toolchain. 'gateMode' is 'push' (fire on git push, marker binds to HEAD) or 'commit' (fire on git commit, marker binds to the staged tree). Omitting the whole 'verify' block falls back to these Node defaults. A step with enabled:false is SKIPPED (no fail). 'perFile:true' appends the touched files (matching lintableExtensions) as args; 'perFile:false' runs the command once for the whole project.",
+  "$comment": "Review Gate config — lives at <target-repo>/.review-gate/gate.config.json (the installer puts it there). 'gateMode' is 'push' (fire on git push, marker binds to HEAD) or 'commit' (fire on git commit, marker binds to the staged tree). Omitting the whole 'verify' block falls back to these Node defaults; if 'verify' IS present, an omitted step is disabled (not Node-defaulted). A step with enabled:false is SKIPPED (no fail). 'perFile:true' appends the touched files (matching lintableExtensions) as args; 'perFile:false' runs the command once for the whole project.",
   "gateMode": "push",
   "verify": {
     "typecheck": {

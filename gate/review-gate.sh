@@ -64,8 +64,51 @@ try:
     cfg = json.load(open(p))
 except Exception:
     print("invalid"); raise SystemExit        # present but unparseable -> fail closed
-m = str(cfg.get("gateMode", "push")).strip().lower()
-print(m if m in ("push", "commit") else "push")
+gm = cfg.get("gateMode")
+if gm is None:
+    print("push")                                  # omitted -> documented default
+else:
+    m = str(gm).strip().lower()
+    print(m if m in ("push", "commit") else "invalid")   # present but a typo -> fail closed
+PY
+}
+
+# Run "$@" under a timeout when GNU `timeout` is available (Linux/Git-Bash); run
+# as-is otherwise (e.g. stock macOS) — degrades to no-timeout, never errors.
+_tmo() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$1" "${@:2}"; else shift; "$@"; fi
+}
+
+# Echo the verify config as shell var assignments (TYPECHECK_*/LINT_*/TEST_*/
+# LINTABLE_EXT/CODE_EXT). Shared by attest and ci-verify so they run the SAME
+# verify (incl. the same Node defaults when the verify block is omitted).
+emit_verify_config() {  # $1 = config path
+  python3 - "$1" <<'PY'
+import json, sys, shlex
+p = sys.argv[1]
+try: cfg = json.load(open(p))
+except Exception: cfg = {}
+verify = cfg.get("verify") or {}
+DEFAULTS = {
+    "typecheck": {"cmd": "node_modules/.bin/tsc --noEmit", "perFile": False, "enabled": True},
+    "lint":      {"cmd": "node_modules/.bin/eslint --max-warnings 0", "perFile": True, "enabled": True},
+    "test":      {"cmd": "node_modules/.bin/vitest related --run", "perFile": True, "enabled": True},
+}
+def step(name):
+    d = DEFAULTS[name]; s = verify.get(name)
+    # If a 'verify' block is present but THIS step is omitted, treat it as
+    # DISABLED (not Node-defaulted) — a Python/Go user who sets only lint+test
+    # must not silently inherit the Node 'tsc' default for typecheck.
+    if s is None: s = {"enabled": False} if verify else d
+    cmd = s.get("cmd", d["cmd"]); perfile = s.get("perFile", d["perFile"])
+    enabled = s.get("enabled", d["enabled"] if cmd else False)
+    return cmd, perfile, enabled
+def emit(n, v): print(f"{n}={shlex.quote(str(v))}")
+for nm, pfx in (("typecheck","TYPECHECK"), ("lint","LINT"), ("test","TEST")):
+    cmd, perfile, enabled = step(nm)
+    emit(f"{pfx}_CMD", cmd); emit(f"{pfx}_PERFILE", "1" if perfile else "0"); emit(f"{pfx}_ENABLED", "1" if enabled else "0")
+emit("LINTABLE_EXT", "|".join(cfg.get("lintableExtensions") or ["ts","tsx","js","jsx","mjs","cjs"]))
+emit("CODE_EXT", "|".join(cfg.get("codeExtensions") or ["ts","tsx","js","jsx","mjs","cjs","sh","bash","py","rb","go","rs","sql"]))
 PY
 }
 
@@ -158,7 +201,7 @@ if [ "$MODE" = "precommit" ] || [ "$MODE" = "prepush" ]; then
   fi
   GATE_MODE="$(read_gate_mode "$ROOT/$GATE_SUBDIR/gate.config.json")"
   if [ "$GATE_MODE" = "invalid" ]; then
-    printf '\n🔒 review-gate: %s/gate.config.json is present but invalid JSON — failing closed. Fix it before committing/pushing.\n\n' "$GATE_SUBDIR" >&2
+    printf '\n🔒 review-gate: %s/gate.config.json is present but invalid (bad JSON or unknown gateMode value) — failing closed. Fix it before committing/pushing.\n\n' "$GATE_SUBDIR" >&2
     exit 1
   fi
 
@@ -242,7 +285,7 @@ else:
 
   [ "$VERDICT" = "SKIP" ] && exit 0
   if [ "$GATE_MODE" = "invalid" ]; then
-    deny "🔒 review-gate: $GATE_SUBDIR/gate.config.json is invalid JSON — fix it before committing/pushing."
+    deny "🔒 review-gate: $GATE_SUBDIR/gate.config.json is invalid (bad JSON or unknown gateMode value) — fix it before committing/pushing."
   fi
   REASON="$(gate_block_reason "$VERDICT")"
   [ -n "$REASON" ] && deny "$REASON"
@@ -275,13 +318,20 @@ if [ "$MODE" = "attest" ]; then
   CONFIG_FILE="$ROOT/$GATE_SUBDIR/gate.config.json"
   mkdir -p "$GATE_DIR"
   GATE_MODE="$(read_gate_mode "$CONFIG_FILE")"
-  if [ "$GATE_MODE" = "invalid" ]; then echo "❌ attest: $GATE_SUBDIR/gate.config.json is invalid JSON — fix it first." >&2; exit 1; fi
+  if [ "$GATE_MODE" = "invalid" ]; then echo "❌ attest: $GATE_SUBDIR/gate.config.json is invalid (bad JSON or unknown gateMode value) — fix it first." >&2; exit 1; fi
 
   echo "▶ review-gate attest [$GATE_MODE mode] — $BRANCH @ ${HEAD:0:8}"
 
   # P0: verify runs against the WORKING TREE, so it must match what the marker
   # binds to — otherwise verify could pass on good working-tree content while a
   # different (bad) staged tree / HEAD is what actually lands.
+  # (a) untracked, non-ignored files are on disk during verify but are NOT in the
+  # committed/pushed content — refuse so "verify == the change" holds.
+  if [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
+    echo "❌ attest: untracked (non-ignored) files present. They're visible to verify but won't be committed — git add -A, remove, .gitignore, or stash them so verify matches the committed content." >&2
+    exit 1
+  fi
+  # (b) modified-but-unstaged tracked files (see above).
   if [ "$GATE_MODE" = "commit" ]; then
     if ! git diff --quiet 2>/dev/null; then
       echo "❌ attest: unstaged changes to tracked files. verify runs on the working tree — stage everything first (git add -A) so the verified content IS the staged tree that gets committed." >&2
@@ -294,34 +344,7 @@ if [ "$MODE" = "attest" ]; then
     fi
   fi
 
-  CFG_SH="$(python3 - "$CONFIG_FILE" <<'PY'
-import json, sys, shlex
-p = sys.argv[1]
-try: cfg = json.load(open(p))
-except Exception: cfg = {}
-verify = cfg.get("verify") or {}
-DEFAULTS = {
-    "typecheck": {"cmd": "node_modules/.bin/tsc --noEmit", "perFile": False, "enabled": True},
-    "lint":      {"cmd": "node_modules/.bin/eslint --max-warnings 0", "perFile": True, "enabled": True},
-    "test":      {"cmd": "node_modules/.bin/vitest related --run", "perFile": True, "enabled": True},
-}
-def step(name):
-    d = DEFAULTS[name]; s = verify.get(name)
-    # If a 'verify' block is present but THIS step is omitted, treat it as
-    # DISABLED (not Node-defaulted) — a Python/Go user who sets only lint+test
-    # must not silently inherit the Node 'tsc' default for typecheck.
-    if s is None: s = {"enabled": False} if verify else d
-    cmd = s.get("cmd", d["cmd"]); perfile = s.get("perFile", d["perFile"])
-    enabled = s.get("enabled", d["enabled"] if cmd else False)
-    return cmd, perfile, enabled
-def emit(n, v): print(f"{n}={shlex.quote(str(v))}")
-for nm, pfx in (("typecheck","TYPECHECK"), ("lint","LINT"), ("test","TEST")):
-    cmd, perfile, enabled = step(nm)
-    emit(f"{pfx}_CMD", cmd); emit(f"{pfx}_PERFILE", "1" if perfile else "0"); emit(f"{pfx}_ENABLED", "1" if enabled else "0")
-emit("LINTABLE_EXT", "|".join(cfg.get("lintableExtensions") or ["ts","tsx","js","jsx","mjs","cjs"]))
-emit("CODE_EXT", "|".join(cfg.get("codeExtensions") or ["ts","tsx","js","jsx","mjs","cjs","sh","bash","py","rb","go","rs","sql"]))
-PY
-)"
+  CFG_SH="$(emit_verify_config "$CONFIG_FILE")"
   eval "$CFG_SH"
   [ -f "$CONFIG_FILE" ] && echo "  • verify config: $GATE_SUBDIR/gate.config.json" || echo "  • verify config: none — Node defaults (tsc + eslint + vitest)"
 
@@ -335,7 +358,9 @@ PY
     echo "  • binding: staged tree ${TREE:0:8}"
   else
     DEFAULT_REF="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"
-    if [ -n "$DEFAULT_REF" ]; then git fetch origin "${DEFAULT_REF#origin/}" --quiet 2>/dev/null || true; else git fetch origin --quiet 2>/dev/null || true; fi
+    # Time-box the fetch: an unreachable remote must not hang attest (the base is
+    # only used to scope the diff; a stale base is safe — it just over-counts).
+    if [ -n "$DEFAULT_REF" ]; then _tmo 15 git fetch origin "${DEFAULT_REF#origin/}" --quiet 2>/dev/null || true; else _tmo 15 git fetch origin --quiet 2>/dev/null || true; fi
     BASE=""
     for ref in "$DEFAULT_REF" origin/master origin/main master main; do
       [ -z "$ref" ] && continue
@@ -464,5 +489,33 @@ open(sys.argv[10],'w').write(json.dumps(m,indent=2))" \
   fi
 fi
 
-echo "usage: review-gate.sh precommit | prepush | check | attest --ran <review,clean-code,test,docs>" >&2
+# ===========================================================================
+# CI-VERIFY — re-run the gate's CONFIGURED verify whole-project, in CI, where it
+# can't be bypassed with --no-verify. Same config + same Node defaults as attest
+# (shared emit_verify_config); whole-project (perFile is ignored — CI is thorough)
+# and no marker/--ran. Use from a CI workflow on every PR.
+# ===========================================================================
+if [ "$MODE" = "ci-verify" ]; then
+  ROOT="$(repo_root)"
+  if [ -z "$ROOT" ]; then echo "❌ ci-verify: not inside a git repo." >&2; exit 1; fi
+  cd "$ROOT" || exit 1
+  CONFIG_FILE="$ROOT/$GATE_SUBDIR/gate.config.json"
+  GATE_MODE="$(read_gate_mode "$CONFIG_FILE")"
+  if [ "$GATE_MODE" = "invalid" ]; then echo "❌ ci-verify: $GATE_SUBDIR/gate.config.json is invalid (bad JSON or unknown gateMode value)." >&2; exit 1; fi
+  CFG_SH="$(emit_verify_config "$CONFIG_FILE")"; eval "$CFG_SH"
+  echo "▶ review-gate ci-verify (whole project)"
+  CI_FAIL=0
+  if [ "$TYPECHECK_ENABLED" = "1" ] && [ -n "$TYPECHECK_CMD" ]; then
+    echo "• typecheck: $TYPECHECK_CMD"; bash -c "$TYPECHECK_CMD" || { echo "✗ typecheck failed" >&2; CI_FAIL=1; }
+  else echo "• typecheck: disabled — skip"; fi
+  if [ "$LINT_ENABLED" = "1" ] && [ -n "$LINT_CMD" ]; then
+    echo "• lint: $LINT_CMD"; bash -c "$LINT_CMD" || { echo "✗ lint failed" >&2; CI_FAIL=1; }
+  else echo "• lint: disabled — skip"; fi
+  if [ "$TEST_ENABLED" = "1" ] && [ -n "$TEST_CMD" ]; then
+    echo "• test: $TEST_CMD"; bash -c "$TEST_CMD" || { echo "✗ test failed" >&2; CI_FAIL=1; }
+  else echo "• test: disabled — skip"; fi
+  if [ "$CI_FAIL" -eq 0 ]; then echo "✅ ci-verify passed"; exit 0; else echo "❌ ci-verify failed" >&2; exit 1; fi
+fi
+
+echo "usage: review-gate.sh precommit | prepush | check | attest --ran <review,clean-code,test,docs> | ci-verify" >&2
 exit 2

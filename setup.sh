@@ -10,6 +10,14 @@ cd "$ROOT"
 if [ ! -d .githooks ]; then
   echo "❌ no .githooks/ directory here — is review-gate installed in this repo?" >&2; exit 1
 fi
+CUR="$(git config --local --get core.hooksPath 2>/dev/null || true)"
+if [ -n "$CUR" ] && [ "$CUR" != ".githooks" ]; then
+  echo "⚠ core.hooksPath is already '$CUR' (husky/another manager)." >&2
+  echo "  NOT overriding it — that would disable your existing hooks. To enforce review-gate," >&2
+  echo "  add to $CUR/pre-commit AND $CUR/pre-push:" >&2
+  echo "    ROOT=\"\$(git rev-parse --show-toplevel)\"; exec bash \"\$ROOT/.review-gate/review-gate.sh\" precommit   # (prepush in pre-push)" >&2
+  exit 1
+fi
 git config core.hooksPath .githooks
 chmod +x .githooks/* 2>/dev/null || true
 echo "✓ core.hooksPath = .githooks — review-gate is now active for this clone."

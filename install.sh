@@ -45,7 +45,13 @@ git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1 || { echo "❌ $TARGET is n
 
 want_tool() { case ",$TOOLS," in *",all,"*) return 0 ;; *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
-copy_if() { local src="$1" dst="$2"; if [ -e "$dst" ] && [ "$FORCE" -ne 1 ]; then echo "  ~ kept $(basename "$dst")"; else cp -r "$src" "$dst"; echo "  ✓ $(basename "$dst")"; fi; }
+copy_if() {  # src dst — copy unless dst exists (unless --force); rm -rf before
+             # overwriting a dir so cp -r doesn't nest a copy inside the old one.
+  local src="$1" dst="$2"
+  if [ -e "$dst" ] && [ "$FORCE" -ne 1 ]; then echo "  ~ kept $(basename "$dst")"; return; fi
+  [ -e "$dst" ] && rm -rf "$dst"
+  cp -r "$src" "$dst"; echo "  ✓ $(basename "$dst")"
+}
 
 # Upsert a marked block (<!-- review-gate:begin/end -->) into a text file.
 upsert_block() {
