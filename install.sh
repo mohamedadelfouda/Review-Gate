@@ -23,6 +23,9 @@
 
 set -euo pipefail
 
+# Python 3 as python3 or python (some systems only ship the latter).
+py() { if command -v python3 >/dev/null 2>&1; then python3 "$@"; elif command -v python >/dev/null 2>&1; then python "$@"; else return 127; fi; }
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET=""; GATE_MODE="commit"; TOOLS="all"; FORCE=0
 while [ "$#" -gt 0 ]; do
@@ -42,6 +45,7 @@ done
 [ -d "$TARGET" ] || { echo "❌ target not found: $TARGET" >&2; exit 1; }
 TARGET="$(cd "$TARGET" && pwd)"
 git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1 || { echo "❌ $TARGET is not a git repo. Run 'git init' first." >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1 || { echo "❌ Python 3 (python3 or python) is required to install review-gate." >&2; exit 1; }
 
 want_tool() { case ",$TOOLS," in *",all,"*) return 0 ;; *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
@@ -55,7 +59,7 @@ copy_if() {  # src dst — copy unless dst exists (unless --force); rm -rf befor
 
 # Upsert a marked block (<!-- review-gate:begin/end -->) into a text file.
 upsert_block() {
-  TARGET_F="$1" SNIPPET_F="$2" python3 <<'PY'
+  TARGET_F="$1" SNIPPET_F="$2" py - <<'PY'
 import os, re, sys
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
@@ -84,14 +88,26 @@ cp "$SCRIPT_DIR/gate/review-gate.sh" "$CG/review-gate.sh"; chmod +x "$CG/review-
 cp "$SCRIPT_DIR/setup.sh" "$CG/setup.sh"; chmod +x "$CG/setup.sh"
 echo "  ✓ .review-gate/review-gate.sh + setup.sh"
 
-copy_if "$SCRIPT_DIR/gate/gate.config.example.json" "$CG/gate.config.json"
-CG_CFG="$CG/gate.config.json" GATE_MODE="$GATE_MODE" python3 <<'PY'
+# Config: created if absent; an INVALID existing config is PRESERVED and the
+# install aborts unless --force replaces it. gateMode then synced to --mode.
+CFG="$CG/gate.config.json"
+if [ -f "$CFG" ] && [ "$FORCE" -ne 1 ]; then
+  if CFG_PATH="$CFG" py -c 'import json,os; json.load(open(os.environ["CFG_PATH"]))' >/dev/null 2>&1; then
+    echo "  ~ kept existing gate.config.json"
+  else
+    echo "  ✗ $CFG exists but is INVALID JSON — left untouched. Fix it, or re-run with --force to replace it." >&2
+    exit 1
+  fi
+else
+  cp "$SCRIPT_DIR/gate/gate.config.example.json" "$CFG"
+  echo "  ✓ gate.config.json"
+fi
+CG_CFG="$CFG" GATE_MODE="$GATE_MODE" py - <<'PY'
 import json, os, sys
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
 p, mode = os.environ["CG_CFG"], os.environ["GATE_MODE"]
-try: cfg = json.load(open(p))
-except Exception: cfg = {}
+cfg = json.load(open(p))   # valid here (validated or freshly copied above)
 if cfg.get("gateMode") != mode:
     cfg["gateMode"] = mode
     open(p, "w").write(json.dumps(cfg, indent=2) + "\n")
@@ -132,7 +148,7 @@ if want_tool claude; then
   for a in "$CG"/agents/*.md; do copy_if "$a" "$TARGET/.claude/agents/$(basename "$a")"; done
   for s in "$CG"/skills/*/; do copy_if "$s" "$TARGET/.claude/skills/$(basename "$s")"; done
   upsert_block "$TARGET/CLAUDE.md" "$SCRIPT_DIR/integrations/claude/CLAUDE.snippet.md"
-  CLAUDE_SETTINGS="$TARGET/.claude/settings.json" GATE_MODE="$GATE_MODE" python3 <<'PY'
+  CLAUDE_SETTINGS="$TARGET/.claude/settings.json" GATE_MODE="$GATE_MODE" py - <<'PY'
 import json, os, sys
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass

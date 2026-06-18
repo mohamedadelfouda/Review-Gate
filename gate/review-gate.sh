@@ -31,7 +31,7 @@
 #                        the diff REQUIRES and refuses the marker unless --ran
 #                        covers them; then runs verify and writes the marker.
 #
-# Prerequisite: bash, git, python3 on PATH (python3 = JSON + safe arg parsing).
+# Prerequisite: bash, git, and Python 3 on PATH as `python3` or `python` (JSON + safe arg parsing).
 # ──────────────────────────────────────────────────────────────────────────
 
 set -uo pipefail
@@ -43,7 +43,7 @@ GATE_SUBDIR=".review-gate"
 # ---- helpers --------------------------------------------------------------
 
 deny() {  # Claude Code deny (modern + legacy forms)
-  python3 -c 'import json,sys
+  python_cmd -c 'import json,sys
 msg=sys.argv[1]
 print(json.dumps({
   "decision":"block","reason":msg,
@@ -54,8 +54,16 @@ print(json.dumps({
 
 repo_root() { git rev-parse --show-toplevel 2>/dev/null; }
 
+# Run Python 3, discovered as `python3` or `python` (some systems only ship the
+# latter). Returns 127 if neither is present so callers can fail closed.
+python_cmd() {
+  if command -v python3 >/dev/null 2>&1; then python3 "$@"
+  elif command -v python >/dev/null 2>&1; then python "$@"
+  else return 127; fi
+}
+
 read_gate_mode() {  # $1 = config path; prints push | commit | invalid
-  python3 - "$1" <<'PY' 2>/dev/null || echo "invalid"
+  python_cmd - "$1" <<'PY' 2>/dev/null || echo "invalid"
 import json, os, sys
 p = sys.argv[1]
 if not os.path.exists(p):
@@ -83,7 +91,7 @@ _tmo() {
 # LINTABLE_EXT/CODE_EXT). Shared by attest and ci-verify so they run the SAME
 # verify (incl. the same Node defaults when the verify block is omitted).
 emit_verify_config() {  # $1 = config path
-  python3 - "$1" <<'PY'
+  python_cmd - "$1" <<'PY'
 import json, sys, shlex
 p = sys.argv[1]
 try: cfg = json.load(open(p))
@@ -140,7 +148,7 @@ $RUN_HINT"
     return
   fi
 
-  MARKER_INFO="$(python3 -c '
+  MARKER_INFO="$(python_cmd -c '
 import json, sys
 try:
     m = json.load(open(sys.argv[1]))
@@ -179,6 +187,25 @@ $RUN_HINT"; return
       printf '%s\n' "🔒 review-gate: the code changed after review (marker ${M_HEAD:0:8} ≠ HEAD ${HEAD:0:8}). Re-run the gate on the latest commit.
 $RUN_HINT"; return
     fi
+    # A pre-push hook receives every ref update on stdin. Validate the actual
+    # commit being pushed, not merely the checked-out HEAD — attesting HEAD must
+    # NOT unlock pushing a different branch. Deletions carry an all-zero oid.
+    if [ -n "${PUSH_UPDATES:-}" ]; then
+      local LOCAL_REF LOCAL_OID REMOTE_REF REMOTE_OID PUSHED_COMMIT
+      while read -r LOCAL_REF LOCAL_OID REMOTE_REF REMOTE_OID; do
+        [ -n "$LOCAL_OID" ] || continue
+        case "$LOCAL_OID" in 0000000000000000000000000000000000000000) continue ;; esac
+        PUSHED_COMMIT="$(git -C "$ROOT" rev-parse --verify "${LOCAL_OID}^{commit}" 2>/dev/null || true)"
+        if [ -z "$PUSHED_COMMIT" ]; then
+          printf '%s\n' "🔒 review-gate: pushed ref '$LOCAL_REF' is not a commit. Review and attest a commit before pushing it.
+$RUN_HINT"; return
+        fi
+        if [ "$PUSHED_COMMIT" != "$M_HEAD" ]; then
+          printf '%s\n' "🔒 review-gate: pushed ref '$LOCAL_REF' points to ${PUSHED_COMMIT:0:8}, but the marker attests ${M_HEAD:0:8}. Check out that ref, review it, and re-run attest before pushing.
+$RUN_HINT"; return
+        fi
+      done <<< "$PUSH_UPDATES"
+    fi
   fi
 
   if [ "$M_OK" != true ]; then
@@ -192,11 +219,17 @@ $RUN_HINT"; return
 # GIT HOOK ENTRYPOINTS — precommit / prepush
 # ===========================================================================
 if [ "$MODE" = "precommit" ] || [ "$MODE" = "prepush" ]; then
-  [ "$MODE" = "prepush" ] && cat >/dev/null 2>&1 || true   # drain hook stdin (refs)
+  PUSH_UPDATES=""
+  [ "$MODE" = "prepush" ] && PUSH_UPDATES="$(cat 2>/dev/null || true)"   # capture pushed refs
   ROOT="$(repo_root)"; [ -z "$ROOT" ] && exit 0
-  [ -f "$ROOT/$GATE_SUBDIR/gate.config.json" ] || exit 0     # repo not gated
-  if ! command -v python3 >/dev/null 2>&1; then
-    printf '\n🔒 review-gate: python3 is required but not on PATH — failing closed. Install python3 (or bypass with --no-verify).\n\n' >&2
+  # This hook is being executed by review-gate.sh, so the repo IS gated. A MISSING
+  # config is a misconfiguration, not "ungated" → fail closed (don't silently pass).
+  if [ ! -f "$ROOT/$GATE_SUBDIR/gate.config.json" ]; then
+    printf '\n🔒 review-gate: %s/gate.config.json is missing — failing closed. Restore it, or uninstall the gate (unset core.hooksPath / remove .githooks) to disable it.\n\n' "$GATE_SUBDIR" >&2
+    exit 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+    printf '\n🔒 review-gate: Python 3 is required as python3 or python — failing closed. Install it (or bypass with --no-verify).\n\n' >&2
     exit 1
   fi
   GATE_MODE="$(read_gate_mode "$ROOT/$GATE_SUBDIR/gate.config.json")"
@@ -226,9 +259,14 @@ if [ "$MODE" = "check" ]; then
   INPUT="$(cat 2>/dev/null || true)"
   ROOT="$(repo_root)"; [ -z "$ROOT" ] && exit 0
   [ -f "$ROOT/$GATE_SUBDIR/review-gate.sh" ] || exit 0       # repo not gated
-  GATE_MODE="$(read_gate_mode "$ROOT/$GATE_SUBDIR/gate.config.json")"
+  CONFIG_MISSING=0
+  if [ -f "$ROOT/$GATE_SUBDIR/gate.config.json" ]; then
+    GATE_MODE="$(read_gate_mode "$ROOT/$GATE_SUBDIR/gate.config.json")"
+  else
+    GATE_MODE="invalid"; CONFIG_MISSING=1   # gated repo but missing config -> deny gated cmds
+  fi
 
-  VERDICT="$(printf '%s' "$INPUT" | GATE_MODE="$GATE_MODE" python3 -c '
+  VERDICT="$(printf '%s' "$INPUT" | GATE_MODE="$GATE_MODE" python_cmd -c '
 import sys, json, re, shlex, os
 mode = os.environ.get("GATE_MODE", "push")
 try:
@@ -285,7 +323,11 @@ else:
 
   [ "$VERDICT" = "SKIP" ] && exit 0
   if [ "$GATE_MODE" = "invalid" ]; then
-    deny "🔒 review-gate: $GATE_SUBDIR/gate.config.json is invalid (bad JSON or unknown gateMode value) — fix it before committing/pushing."
+    if [ "${CONFIG_MISSING:-0}" = "1" ]; then
+      deny "🔒 review-gate: $GATE_SUBDIR/gate.config.json is missing — failing closed. Restore it, or uninstall the gate to disable it."
+    else
+      deny "🔒 review-gate: $GATE_SUBDIR/gate.config.json is invalid (bad JSON or unknown gateMode value) — fix it before committing/pushing."
+    fi
   fi
   REASON="$(gate_block_reason "$VERDICT")"
   [ -n "$REASON" ] && deny "$REASON"
@@ -317,6 +359,7 @@ if [ "$MODE" = "attest" ]; then
   MARKER="$GATE_DIR/attest.json"
   CONFIG_FILE="$ROOT/$GATE_SUBDIR/gate.config.json"
   mkdir -p "$GATE_DIR"
+  if [ ! -f "$CONFIG_FILE" ]; then echo "❌ attest: $GATE_SUBDIR/gate.config.json is missing — create it (or reinstall review-gate)." >&2; exit 1; fi
   GATE_MODE="$(read_gate_mode "$CONFIG_FILE")"
   if [ "$GATE_MODE" = "invalid" ]; then echo "❌ attest: $GATE_SUBDIR/gate.config.json is invalid (bad JSON or unknown gateMode value) — fix it first." >&2; exit 1; fi
 
@@ -364,6 +407,10 @@ if [ "$MODE" = "attest" ]; then
     BASE=""
     for ref in "$DEFAULT_REF" origin/master origin/main master main; do
       [ -z "$ref" ] && continue
+      REF_TIP="$(git rev-parse "$ref" 2>/dev/null || true)"
+      # On a repo's first push, local main/master IS HEAD — not a meaningful review
+      # base. Skip it so a first push diffs against the empty tree (ALL files).
+      [ "$REF_TIP" = "$HEAD" ] && continue
       BASE="$(git merge-base HEAD "$ref" 2>/dev/null || true)"; [ -n "$BASE" ] && break
     done
     if [ -z "$BASE" ]; then BASE="$(git hash-object -t tree /dev/null 2>/dev/null)"; echo "  ⚠ no base branch — diffing against the empty tree (ALL files treated as touched)."; fi
@@ -372,7 +419,7 @@ if [ "$MODE" = "attest" ]; then
     echo "  • binding: commit ${HEAD:0:8}"
   fi
 
-  REQUIRED="$(FULL_NAMES | CODE_EXT="$CODE_EXT" python3 -c '
+  REQUIRED="$(FULL_NAMES | CODE_EXT="$CODE_EXT" python_cmd -c '
 import sys, re, os
 files = [f.decode("utf-8","surrogateescape") for f in sys.stdin.buffer.read().split(b"\x00") if f]
 code_ext = [e for e in os.environ.get("CODE_EXT","").split("|") if e]
@@ -395,7 +442,7 @@ print(",".join(req))
 
   [ -z "$REQUIRED" ] && [ "$GATE_MODE" = "commit" ] && echo "  ⚠ nothing staged — did you forget 'git add'?"
 
-  MISSING="$(python3 -c '
+  MISSING="$(python_cmd -c '
 import sys
 req = [x for x in sys.argv[1].split(",") if x]
 ran = set(x.strip() for x in sys.argv[2].replace(" ", ",").split(",") if x.strip())
@@ -414,7 +461,7 @@ print(",".join([r for r in req if r not in ran]))
   TOUCHED_Z="$(mktemp -t gate-touched.XXXXXX)"
   TC_LOG="$(mktemp -t gate-tc.XXXXXX)"; LINT_LOG="$(mktemp -t gate-lint.XXXXXX)"; TEST_LOG="$(mktemp -t gate-test.XXXXXX)"
   trap 'rm -f "$TOUCHED_Z" "$TC_LOG" "$LINT_LOG" "$TEST_LOG"' EXIT
-  ACMR_NAMES | LINTABLE_EXT="$LINTABLE_EXT" python3 -c '
+  ACMR_NAMES | LINTABLE_EXT="$LINTABLE_EXT" python_cmd -c '
 import sys, re, os
 data = sys.stdin.buffer.read().split(b"\x00")
 exts = [e for e in os.environ.get("LINTABLE_EXT","").split("|") if e]
@@ -422,7 +469,7 @@ pat = re.compile((r"\.(" + "|".join(re.escape(e) for e in exts) + r")$").encode(
 out = [f for f in data if f and (pat is None or pat.search(f))]
 sys.stdout.buffer.write(b"\x00".join(out))
 ' > "$TOUCHED_Z"
-  NLINT="$(python3 -c 'import sys; d=open(sys.argv[1],"rb").read().split(b"\x00"); print(len([x for x in d if x]))' "$TOUCHED_Z" 2>/dev/null || echo 0)"
+  NLINT="$(python_cmd -c 'import sys; d=open(sys.argv[1],"rb").read().split(b"\x00"); print(len([x for x in d if x]))' "$TOUCHED_Z" 2>/dev/null || echo 0)"
 
   WORKTREE_HINT=""
   if [ ! -d "$ROOT/node_modules" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -448,7 +495,7 @@ sys.stdout.buffer.write(b"\x00".join(out))
   else
     echo "  • lint: $LINT_CMD ($([ "$LINT_PERFILE" = "1" ] && echo "$NLINT file(s)" || echo "whole project")) ..."
     OK_RUN=0
-    if [ "$LINT_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec $c "$@"' _ "$LINT_CMD" < "$TOUCHED_Z" >"$LINT_LOG" 2>&1 && OK_RUN=1
+    if [ "$LINT_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec sh -c "$c \"\$@\"" _ "$@"' _ "$LINT_CMD" < "$TOUCHED_Z" >"$LINT_LOG" 2>&1 && OK_RUN=1
     else bash -c "$LINT_CMD" >"$LINT_LOG" 2>&1 && OK_RUN=1; fi
     if [ "$OK_RUN" -eq 1 ]; then LINT_RES="pass"; echo "    ✓ lint clean"
     else LINT_RES="fail"; FAILED=1; echo "    ✗ lint findings${WORKTREE_HINT}:"; tail -20 "$LINT_LOG" | sed 's/^/      /'; fi
@@ -461,7 +508,7 @@ sys.stdout.buffer.write(b"\x00".join(out))
   else
     echo "  • test: $TEST_CMD ($([ "$TEST_PERFILE" = "1" ] && echo "$NLINT file(s)" || echo "whole suite")) ..."
     OK_RUN=0
-    if [ "$TEST_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec $c "$@"' _ "$TEST_CMD" < "$TOUCHED_Z" >"$TEST_LOG" 2>&1 && OK_RUN=1
+    if [ "$TEST_PERFILE" = "1" ]; then xargs -0 sh -c 'c="$1"; shift; exec sh -c "$c \"\$@\"" _ "$@"' _ "$TEST_CMD" < "$TOUCHED_Z" >"$TEST_LOG" 2>&1 && OK_RUN=1
     else bash -c "$TEST_CMD" >"$TEST_LOG" 2>&1 && OK_RUN=1; fi
     if [ "$OK_RUN" -eq 1 ]; then TEST_RES="pass"; echo "    ✓ test passed"
     else TEST_RES="fail"; FAILED=1; echo "    ✗ test failures${WORKTREE_HINT}:"; tail -25 "$TEST_LOG" | sed 's/^/      /'; fi
@@ -469,7 +516,7 @@ sys.stdout.buffer.write(b"\x00".join(out))
 
   OK="true"; [ "$FAILED" -eq 1 ] && OK="false"
 
-  python3 -c "import json,sys
+  python_cmd -c "import json,sys
 m={'mode':sys.argv[1],'head':sys.argv[2],'tree':sys.argv[3],'branch':sys.argv[4],'ts':sys.argv[5],
    'verify':{'typecheck':sys.argv[6],'lint':sys.argv[7],'test':sys.argv[8]},
    'gate':{'required':sys.argv[11],'ran':sys.argv[12]},'ok':sys.argv[9]=='true'}
@@ -500,6 +547,7 @@ if [ "$MODE" = "ci-verify" ]; then
   if [ -z "$ROOT" ]; then echo "❌ ci-verify: not inside a git repo." >&2; exit 1; fi
   cd "$ROOT" || exit 1
   CONFIG_FILE="$ROOT/$GATE_SUBDIR/gate.config.json"
+  if [ ! -f "$CONFIG_FILE" ]; then echo "❌ ci-verify: $GATE_SUBDIR/gate.config.json is missing." >&2; exit 1; fi
   GATE_MODE="$(read_gate_mode "$CONFIG_FILE")"
   if [ "$GATE_MODE" = "invalid" ]; then echo "❌ ci-verify: $GATE_SUBDIR/gate.config.json is invalid (bad JSON or unknown gateMode value)." >&2; exit 1; fi
   CFG_SH="$(emit_verify_config "$CONFIG_FILE")"; eval "$CFG_SH"
