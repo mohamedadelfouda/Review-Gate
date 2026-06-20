@@ -12,6 +12,10 @@
 - **Telemetry:** None by default — it never sends your code, diffs, file names, or repo metadata anywhere.
 - **Works with:** terminal, humans, Claude Code, OpenAI Codex, Cursor, Windsurf, and any tool that runs Git.
 
+<p align="center">
+  <img src="docs/review-gate-demo.gif" alt="review-gate demo: a git commit is blocked until the review is attested, then it lands" width="760">
+</p>
+
 **🇬🇧 [English](#english) · 🇪🇬 [العربية](#العربية)**
 
 ### Quick links
